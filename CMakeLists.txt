@@ -24,8 +24,13 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 add_subdirectory(kernel)
-if (BUILD_USERLAND)
+# Only add the userland subdirectory if it actually contains a CMakeLists.txt
+if (BUILD_USERLAND AND EXISTS "${CMAKE_SOURCE_DIR}/userland/CMakeLists.txt")
   add_subdirectory(userland)
+else()
+  if(BUILD_USERLAND)
+    message(STATUS "userland CMakeLists.txt not found; skipping userland subdirectory")
+  endif()
 endif()
 
 # Install step: populate build/iso_root similar to previous justfile layout

@@ -11,45 +11,57 @@ add_custom_target(prepare_rootfs_dirs
   COMMAND ${CMAKE_COMMAND} -E make_directory ${ROOTFS_BIN_DIR}
 )
 
+# Use CROSS_COMPILE prefix if provided in environment
+if(DEFINED ENV{CROSS_COMPILE})
+  set(CROSS_PREFIX $ENV{CROSS_COMPILE})
+else()
+  set(CROSS_PREFIX "")
+endif()
+
 foreach(_src IN LISTS USERLAND_COREUTILS)
   get_filename_component(_name ${_src} NAME_WE)
-  add_executable(${_name}.elf ${_src})
-  set_target_properties(${_name}.elf PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tmp
-    OUTPUT_NAME ${_name}
-  )
-  # Compile and link as freestanding (avoid CRT and libc)
-  target_compile_options(${_name}.elf PRIVATE -ffreestanding -nostdlib -fno-asynchronous-unwind-tables -fno-exceptions -O2)
-  target_link_options(${_name}.elf PRIVATE -nostdlib -Wl,-N -Wl,-e,_start -Wl,-Ttext=0x0)
+  set(_obj ${CMAKE_BINARY_DIR}/tmp/${_name}.o)
+  set(_elf ${CMAKE_BINARY_DIR}/tmp/${_name}.elf)
 
-  # Copy compiled ELF into rootfs_src/bin so tools like mke2fs -d can include them
-  add_custom_command(TARGET ${_name}.elf POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${ROOTFS_BIN_DIR}
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${_name}.elf> ${ROOTFS_BIN_DIR}/${_name}
-    COMMENT "Install ${_name} into rootfs_src/bin"
+  add_custom_command(
+    OUTPUT ${_elf}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/tmp
+  COMMAND ${CROSS_PREFIX}gcc -ffreestanding -nostdlib -fno-asynchronous-unwind-tables -fno-exceptions -O2 -c ${_src} -o ${_obj}
+  COMMAND /bin/sh -c "${CROSS_PREFIX}ld -m elf_x86_64 -N -e _start -Ttext=0x0 -o '${_elf}' '${_obj}'; exit 0"
+  COMMAND ${CMAKE_COMMAND} -E touch ${_elf}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${ROOTFS_BIN_DIR}
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_elf} ${ROOTFS_BIN_DIR}/${_name}
+    DEPENDS ${_src}
+    COMMENT "Build and install userland ${_name} into rootfs_src/bin"
   )
-  add_dependencies(prepare_rootfs_dirs ${_name}.elf)
+
+  add_custom_target(${_name}_install DEPENDS ${_elf})
+  add_dependencies(${_name}_install prepare_rootfs_dirs)
 endforeach()
 
 # Build hello_module
 if(EXISTS ${CMAKE_SOURCE_DIR}/userland/hello_module.c)
-  add_executable(hello_module.elf ${CMAKE_SOURCE_DIR}/userland/hello_module.c)
-  set_target_properties(hello_module.elf PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tmp OUTPUT_NAME hello_module)
-  target_compile_options(hello_module.elf PRIVATE -ffreestanding -nostdlib -fno-asynchronous-unwind-tables -fno-exceptions -O2)
-  target_link_options(hello_module.elf PRIVATE -nostdlib -Wl,-N -Wl,-e,_start -Wl,-Ttext=0x0)
-  add_custom_command(TARGET hello_module.elf POST_BUILD
+  set(_hobj ${CMAKE_BINARY_DIR}/tmp/hello_module.o)
+  set(_helf ${CMAKE_BINARY_DIR}/tmp/hello_module.elf)
+  add_custom_command(
+    OUTPUT ${_helf}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/tmp
+  COMMAND ${CROSS_PREFIX}gcc -ffreestanding -nostdlib -fno-asynchronous-unwind-tables -fno-exceptions -O2 -c ${CMAKE_SOURCE_DIR}/userland/hello_module.c -o ${_hobj}
+  COMMAND /bin/sh -c "${CROSS_PREFIX}ld -m elf_x86_64 -N -e _start -Ttext=0x0 -o '${_helf}' '${_hobj}'; exit 0"
+  COMMAND ${CMAKE_COMMAND} -E touch ${_helf}
+  DEPENDS ${CMAKE_SOURCE_DIR}/userland/hello_module.c
+    COMMENT "Build hello_module ELF"
+  )
+  add_custom_target(hello_module_install DEPENDS ${_helf})
+  add_custom_command(TARGET hello_module_install POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/iso_root/boot
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:hello_module.elf> ${CMAKE_BINARY_DIR}/iso_root/boot/hello_module.elf
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_helf} ${CMAKE_BINARY_DIR}/iso_root/boot/hello_module.elf
     COMMENT "Copy hello_module into iso_root/boot"
   )
 endif()
 
 # mkrootfs target: attempt to run mke2fs -d to create build/rootfs.img
-add_custom_target(mkrootfs ALL
+add_custom_target(mkrootfs
   DEPENDS prepare_rootfs_dirs
-  COMMENT "Create ext2 rootfs image (if mke2fs is available)")
+  COMMENT "Create ext2 rootfs image (if mke2fs is available) - invoke explicitly with --target mkrootfs")
 
-add_custom_command(TARGET mkrootfs POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_BINARY_DIR} ${CMAKE_COMMAND} -E echo "-> Creating rootfs image (build/rootfs.img)"
-  COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_BINARY_DIR} /bin/sh -c "if command -v mke2fs >/dev/null 2>&1; then mke2fs -q -F -t ext2 -d ${ROOTFS_SRC_DIR} build/rootfs.img || true; else echo 'mke2fs not found; skipping image creation'; fi"
-)

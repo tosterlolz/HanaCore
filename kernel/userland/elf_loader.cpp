@@ -56,6 +56,9 @@ void* elf64_load_from_memory(const void* data, size_t size) {
     const Elf64_Ehdr* eh = (const Elf64_Ehdr*)data;
     if (!is_valid_elf64(eh)) return NULL;
     if (eh->e_phoff == 0 || eh->e_phnum == 0) return NULL;
+    // Basic sanity: make sure program header table is inside the provided blob
+    size_t ph_table_end = (size_t)eh->e_phoff + (size_t)eh->e_phnum * (size_t)eh->e_phentsize;
+    if (eh->e_phoff > size || ph_table_end > size) return NULL;
 
     // Find min and max vaddr among PT_LOAD
     uint64_t min_vaddr = (uint64_t)-1;
@@ -70,6 +73,10 @@ void* elf64_load_from_memory(const void* data, size_t size) {
     if (min_vaddr == (uint64_t)-1) return NULL;
 
     uint64_t total = max_vaddr - min_vaddr;
+    // Sanity cap: avoid attempting to allocate absurdly large user images
+    const uint64_t MAX_USER_IMAGE = 64 * 1024 * 1024ULL; // 64 MiB
+    if (total == 0 || total > MAX_USER_IMAGE) return NULL;
+
     // Allocate kernel memory for the whole image (page aligned)
     void* mem = bump_alloc_alloc((size_t)total, 0x1000);
     if (!mem) return NULL;
@@ -81,12 +88,24 @@ void* elf64_load_from_memory(const void* data, size_t size) {
         const Elf64_Phdr* ph = (const Elf64_Phdr*)(base + eh->e_phoff + i * eh->e_phentsize);
         if (ph->p_type != PT_LOAD) continue;
         if (ph->p_offset + ph->p_filesz > size) return NULL; // truncated
+        // Destination within our allocated region
         uintptr_t dest = (uintptr_t)mem + (ph->p_vaddr - min_vaddr);
+        // Guard: ensure we don't write past allocated memory
+        if ((uint64_t)(dest - (uintptr_t)mem) + ph->p_filesz > total) return NULL;
         memcpy((void*)dest, base + ph->p_offset, (size_t)ph->p_filesz);
         // remaining bytes are already zero
     }
 
-    // Compute relocated entry
+    // Compute relocated entry. Validate entry lies inside the mapped range.
+    if (eh->e_entry < min_vaddr || eh->e_entry >= max_vaddr) {
+        // If entry is zero and min_vaddr is zero, allow entry==0 case
+        if (!(eh->e_entry == 0 && min_vaddr == 0)) {
+            return NULL;
+        }
+    }
+
     void* entry = (void*)((uintptr_t)mem + (eh->e_entry - min_vaddr));
+    // Final sanity: entry must be inside allocated memory
+    if ((uintptr_t)entry < (uintptr_t)mem || (uintptr_t)entry >= (uintptr_t)mem + (size_t)total) return NULL;
     return entry;
 }

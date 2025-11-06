@@ -23,9 +23,14 @@ set(EXTRA_C_SRCS
   ${CMAKE_SOURCE_DIR}/flanterm/src/flanterm_backends/fb.c
   ${CMAKE_SOURCE_DIR}/kernel/libs/nanoprintf.c
   ${CMAKE_SOURCE_DIR}/kernel/libs/libc.c
+  ${CMAKE_SOURCE_DIR}/userland/shell.cpp
 )
 
 set(KERNEL_SRCS ${KERNEL_CPP_SRCS} ${KERNEL_C_SRCS} ${KERNEL_ASM_SRCS} ${EXTRA_C_SRCS})
+
+# Exclude certain assembly stubs that have C implementations to avoid duplicate symbols
+list(REMOVE_ITEM KERNEL_SRCS "${CMAKE_SOURCE_DIR}/kernel/arch/gdt_reload.S")
+list(REMOVE_ITEM KERNEL_SRCS "${CMAKE_SOURCE_DIR}/kernel/arch/isr_common.S")
 
 add_executable(kernel ${KERNEL_SRCS})
 

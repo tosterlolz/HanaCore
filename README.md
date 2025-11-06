@@ -2,10 +2,11 @@
 ## a simple ToyOS in C++ i guess
 
 ## Dependencies:
-* x86_64-gcc, ld
+* x86_64-gcc, binutils
 * nasm
 * justfile
 * qemu
+* cmake
 * brain
 
 ## how to build
