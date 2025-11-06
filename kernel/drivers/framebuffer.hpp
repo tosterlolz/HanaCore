@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "../screen.h"
+#include "../screen.hpp"
 
 #ifdef __cplusplus
 extern "C" {

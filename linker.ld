@@ -1,26 +1,13 @@
 OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(kernel_main)
 
-/*
- * Linker script for HanaCore
- * - Link at higher-half 0xffffffff80000000
- * - Place .limine_requests on its own page (aligned to 4K) so it cannot
- *   share a page with .text/.rodata that have different segment permissions.
- */
-PHDRS {
-  limine PT_LOAD FLAGS(0x2); /* RW */
-  text   PT_LOAD FLAGS(0x5); /* RX */
-  rodata PT_LOAD FLAGS(0x4); /* R  */
-  data   PT_LOAD FLAGS(0x2); /* RW */
-}
-
 SECTIONS
 {
   /* Start at higher-half virtual address */
   . = 0xffffffff80000000;
 
   /* Put limine requests on their own 4K-aligned page at the start */
-  .limine_requests ALIGN(4096) : PHDRS(limine) {
+  .limine_requests ALIGN(4096) : {
     KEEP(*(.limine_requests_start_marker))
     KEEP(*(.limine_requests))
     KEEP(*(.limine_requests_end_marker))
@@ -28,15 +15,15 @@ SECTIONS
   }
 
   /* Text segment - aligned to page */
-  .text ALIGN(4096) : PHDRS(text) {
+  .text ALIGN(4096) : {
     *(.text*)
   }
 
-  .rodata ALIGN(4096) : PHDRS(rodata) {
+  .rodata ALIGN(4096) : {
     *(.rodata*)
   }
 
-  .data ALIGN(4096) : PHDRS(data) {
+  .data ALIGN(4096) : {
     *(.data*)
 
     __init_array_start = .;

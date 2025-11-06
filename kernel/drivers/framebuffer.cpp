@@ -1,5 +1,5 @@
-#include "framebuffer.h"
-#include "../screen.h"
+#include "framebuffer.hpp"
+#include "../screen.hpp"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -8,10 +8,13 @@ static struct limine_framebuffer* fb_global = NULL;
 static uint32_t fb_width = 0;
 static uint32_t fb_height = 0;
 static uint32_t fb_pitch = 0;
+// Kernel virtual pointer to the framebuffer (computed using Limine HHDM)
+static uint32_t* fb_virt = NULL;
 
-// Framebuffer request (defined in screen.c)
+// Framebuffer request (defined in screen.c) and HHDM request (provided by Limine)
 extern "C" {
     extern volatile struct limine_framebuffer_request framebuffer_request;
+    extern volatile struct limine_hhdm_request limine_hhdm_request;
 }
 
 bool framebuffer_init() {
@@ -24,12 +27,35 @@ bool framebuffer_init() {
     if (resp->framebuffer_count == 0) {
         return false;
     }
-    
     fb_global = resp->framebuffers[0];
     fb_width = fb_global->width;
     fb_height = fb_global->height;
     fb_pitch = fb_global->pitch;
-    
+
+    // Require HHDM offset from Limine to safely derive a kernel virtual
+    // pointer for the physical framebuffer address. If HHDM is not present
+    // we refuse to initialize to avoid dereferencing physical addresses
+    // on a higher-half kernel (which causes crashes/bootloops).
+    if (limine_hhdm_request.response == NULL) {
+        fb_virt = NULL;
+        return false;
+    }
+
+    uint64_t hhdm_off = limine_hhdm_request.response->offset;
+
+    /* The framebuffer address returned by Limine may already be a virtual
+       address in the kernel's HHDM (some setups return HHDM-mapped addresses).
+       If the address is already >= hhdm_off, treat it as a virtual pointer
+       and use it directly. Otherwise, treat it as a physical address and
+       add the HHDM offset. This avoids double-adding the offset which
+       would produce an invalid pointer. */
+    uint64_t fb_addr = (uint64_t)fb_global->address;
+    if (fb_addr >= hhdm_off) {
+        fb_virt = (uint32_t *)fb_addr;
+    } else {
+        fb_virt = (uint32_t *)(hhdm_off + fb_addr);
+    }
+
     return true;
 }
 
@@ -41,9 +67,10 @@ void framebuffer_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if (!fb_global || x >= fb_width || y >= fb_height) {
         return;
     }
-    
+    if (fb_virt == NULL) return;
+
     uint32_t pixel_offset = y * fb_pitch + x * (fb_global->bpp / 8);
-    uint32_t* pixel = (uint32_t*)((uint64_t)fb_global->address + pixel_offset);
+    uint32_t* pixel = (uint32_t*)((uint8_t*)fb_virt + pixel_offset);
     *pixel = color;
 }
 
@@ -109,10 +136,11 @@ void framebuffer_draw_line(int x1, int y1, int x2, int y2, uint32_t color) {
 
 void framebuffer_clear(uint32_t color) {
     if (!fb_global) return;
-    
-    uint32_t* pixels = (uint32_t*)((uint64_t)fb_global->address);
+    if (fb_virt == NULL) return;
+
+    uint32_t* pixels = fb_virt;
     uint32_t pixel_count = (fb_pitch / 4) * fb_height;
-    
+
     for (uint32_t i = 0; i < pixel_count; i++) {
         pixels[i] = color;
     }

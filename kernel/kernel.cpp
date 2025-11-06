@@ -1,5 +1,6 @@
-#include "screen.h"
-#include "drivers/framebuffer.h"
+#include "screen.hpp"
+#include "drivers/framebuffer.hpp"
+#include "nanoprintf.h"
 
 // Linker script symbols for init/fini arrays
 extern "C" {
@@ -52,17 +53,15 @@ static void call_destructors() {
 }
 
 extern "C" void kernel_main() {
-    serial_puts("\n=== HanaCore Kernel Starting ===\n");
-    
+    nano_log("\n=== HanaCore Kernel Starting ===\n");
     // Call global constructors
     call_constructors();
-    
+    print("✓ Global constructors called.\n");
     clear_screen();
     print("🎉 HanaCore Kernel Initialized!\n");
     print("Bootloader: Limine (x86_64)\n");
     print("Welcome to HanaCore — minimalist C++ OS kernel.\n");
     print("System ready.\n\n");
-    
     // Try to initialize framebuffer for graphics
     if (framebuffer_init()) {
         print("✓ Framebuffer initialized!\n");
