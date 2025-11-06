@@ -8,6 +8,9 @@ extern "C" {
 	char keyboard_poll_char(void);
 	void* ext2_get_file_alloc(const char* path, size_t* out_len);
 	void* elf64_load_from_memory(const void* data, size_t size);
+
+	// builtin ls implemented in kernel/shell/coreutils/ls.cpp
+	void builtin_ls_cmd(const char* path);
 }
 
 static char cwd[256] = "/";
@@ -24,7 +27,7 @@ static void print_prompt() {
 extern "C" void shell_main(void) {
 	char buf[SHELL_BUF_SIZE];
 	size_t pos = 0;
-	print("Welcome to HanaCore shell!\n");
+	print("Welcome to HanaShell!\n");
 	print_prompt();
 
 	while (1) {
@@ -106,6 +109,36 @@ extern "C" void shell_main(void) {
 					}
 				}
 				// Reset input buffer and prompt
+				pos = 0;
+				print_prompt();
+				continue;
+			}
+
+			// Handle builtin: ls
+			if (pos >= 2 && buf[0] == 'l' && buf[1] == 's' && (pos == 2 || buf[2] == ' ')) {
+				const char* arg = NULL;
+				if (pos > 3) arg = &buf[3];
+				else if (pos == 3) arg = &buf[3];
+				char path[256];
+				if (!arg || *arg == '\0') {
+					// list cwd
+					size_t i = 0; while (i + 1 < sizeof(path) && cwd[i]) { path[i] = cwd[i]; ++i; }
+					if (i == 0) { path[0] = '/'; path[1] = '\0'; } else { path[i] = '\0'; }
+				} else if (arg[0] == '/') {
+					// absolute
+					size_t i = 0; while (i + 1 < sizeof(path) && arg[i]) { path[i] = arg[i]; ++i; }
+					path[i] = '\0';
+				} else {
+					// relative: append to cwd
+					size_t len = 0; while (cwd[len]) ++len;
+					size_t p = 0;
+					for (p = 0; p < len && p + 1 < sizeof(path); ++p) path[p] = cwd[p];
+					if (p > 1 && path[p-1] != '/') { if (p + 1 < sizeof(path)) path[p++] = '/'; }
+					size_t i = 0;
+					while (p + i + 1 < sizeof(path) && arg[i]) { path[p + i] = arg[i]; ++i; }
+					path[p + i] = '\0';
+				}
+				builtin_ls_cmd(path);
 				pos = 0;
 				print_prompt();
 				continue;

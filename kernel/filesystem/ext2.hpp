@@ -22,6 +22,10 @@ int64_t ext2_read_file(const char* path, void* buf, size_t len);
 // returns NULL on error.
 void* ext2_get_file_alloc(const char* path, size_t* out_len);
 
+// List directory entries for `path`. For each entry, `cb` is invoked with a
+// NUL-terminated name. Returns number of entries reported or -1 on error.
+int ext2_list_dir(const char* path, void (*cb)(const char* name));
+
 #ifdef __cplusplus
 }
 #endif

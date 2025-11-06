@@ -1,4 +1,4 @@
-// Minimal userland-like shell interface
+// Built-in kernel shell header
 #pragma once
 
 #ifdef __cplusplus

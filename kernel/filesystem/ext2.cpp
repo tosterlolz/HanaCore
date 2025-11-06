@@ -238,3 +238,67 @@ void* ext2_get_file_alloc(const char* path, size_t* out_len) {
     if (out_len) *out_len = fsize;
     return buf;
 }
+
+// List directory entries for `path`. Calls `cb(name)` for each entry.
+int ext2_list_dir(const char* path, void (*cb)(const char* name)) {
+    if (!fs_image || !path || !cb) return -1;
+    if (fs_image_size < 2048) return -1;
+    struct ext2_super_block sb;
+    memcpy(&sb, fs_image + 1024, sizeof(sb));
+    if (sb.s_magic != 0xEF53) return -1;
+    uint32_t block_size = 1024u << sb.s_log_block_size;
+
+    const char* p = path;
+    while (*p == '/') ++p;
+    if (*p == '\0') {
+        // list root
+        p = (const char*)"/";
+    }
+
+    // find inode for the path (reuse lookup logic)
+    char comp[256];
+    uint32_t cur_ino = 2; // root
+    const char* seg = p;
+    while (*seg) {
+        const char* slash = seg;
+        while (*slash && *slash != '/') ++slash;
+        size_t len = (size_t)(slash - seg);
+        if (len == 0 || len >= sizeof(comp)) return -1;
+        memcpy(comp, seg, len); comp[len] = '\0';
+        uint32_t next = ext2_lookup_in_dir(cur_ino, comp, &sb, block_size);
+        if (next == 0) return -1;
+        cur_ino = next;
+        seg = slash;
+        while (*seg == '/') ++seg;
+    }
+
+    // Read inode for directory
+    struct ext2_inode inode;
+    if (ext2_read_inode(cur_ino, &inode, &sb, block_size) != 0) return -1;
+    uint32_t sz = inode.i_size;
+    uint32_t per_block = block_size;
+    uint32_t read = 0;
+    int count = 0;
+    for (int bi = 0; bi < 12 && read < sz; ++bi) {
+        uint32_t b = inode.i_block[bi];
+        if (b == 0) { read += per_block; continue; }
+        uint8_t* blk = (uint8_t*)ext2_block_ptr(b, block_size);
+        if (!blk) return -1;
+        uint32_t off = 0;
+        while (off < block_size) {
+            struct ext2_dir_entry* de = (struct ext2_dir_entry*)(blk + off);
+            if (de->inode == 0) break;
+            uint32_t nl = de->name_len;
+            if (nl >= 256) nl = 255;
+            char namebuf[256];
+            memcpy(namebuf, blk + off + 8, nl);
+            namebuf[nl] = '\0';
+            cb(namebuf);
+            ++count;
+            if (de->rec_len == 0) break;
+            off += de->rec_len;
+        }
+        read += per_block;
+    }
+    return count;
+}

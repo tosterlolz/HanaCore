@@ -23,7 +23,7 @@ set(EXTRA_C_SRCS
   ${CMAKE_SOURCE_DIR}/flanterm/src/flanterm_backends/fb.c
   ${CMAKE_SOURCE_DIR}/kernel/libs/nanoprintf.c
   ${CMAKE_SOURCE_DIR}/kernel/libs/libc.c
-  ${CMAKE_SOURCE_DIR}/userland/shell.cpp
+  ${CMAKE_SOURCE_DIR}/kernel/shell/shell.cpp
 )
 
 set(KERNEL_SRCS ${KERNEL_CPP_SRCS} ${KERNEL_C_SRCS} ${KERNEL_ASM_SRCS} ${EXTRA_C_SRCS})
