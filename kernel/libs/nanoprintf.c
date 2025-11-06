@@ -1,6 +1,6 @@
 /* Very small vsnprintf implementation supporting %s, %d, %u, %x, %p, %c, %% */
 #include "nanoprintf.h"
-#include "screen.hpp"
+#include "../drivers/screen.hpp"
 #include <stdint.h>
 #include <stdarg.h>
 #include <stddef.h>

@@ -15,14 +15,17 @@ build-kernel:
     mkdir -p build/iso_root/boot
     {{cxx}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-exceptions -fno-rtti -fno-stack-protector -c kernel/kernel.cpp -o build/kernel.o
     {{cxx}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-exceptions -fno-rtti -fno-stack-protector -c kernel/drivers/framebuffer.cpp -o build/framebuffer.o
-    {{cxx}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c kernel/screen.cpp -o build/screen.o
+    {{cxx}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-exceptions -fno-rtti -fno-stack-protector -c kernel/arch/gdt.cpp -o build/gdt.o
+    {{cxx}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-exceptions -fno-rtti -fno-stack-protector -c kernel/arch/idt.cpp -o build/idt.o
+    {{cxx}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c kernel/drivers/screen.cpp -o build/screen.o
+    {{cxx}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c kernel/utils/logger.cpp -o build/logger.o
     # Compile Flanterm C sources separately so the kernel TU remains C++ only
     {{cc}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c flanterm/src/flanterm.c -o build/flanterm.o
     {{cc}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c flanterm/src/flanterm_backends/fb.c -o build/flanterm_fb.o
-    {{cc}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c kernel/limine_entry.c -o build/limine_entry.o
-    {{cc}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c kernel/nanoprintf.c -o build/nanoprintf.o
-    {{cc}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c kernel/libc.c -o build/libc.o
-    {{ld}} -m elf_x86_64 -T linker.ld -o build/kernel.elf build/limine_entry.o build/kernel.o build/framebuffer.o build/screen.o build/nanoprintf.o build/libc.o build/flanterm.o build/flanterm_fb.o
+    {{cc}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c boot/limine_entry.c -o build/limine_entry.o
+    {{cc}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c kernel/libs/nanoprintf.c -o build/nanoprintf.o
+    {{cc}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c kernel/libs/libc.c -o build/libc.o
+    {{ld}} -m elf_x86_64 -T linker.ld -o build/kernel.elf build/limine_entry.o build/kernel.o build/gdt.o build/idt.o build/framebuffer.o build/screen.o build/logger.o build/nanoprintf.o build/libc.o build/flanterm.o build/flanterm_fb.o
     cp build/kernel.elf build/iso_root/boot/kernel
 
 build-image: build-kernel

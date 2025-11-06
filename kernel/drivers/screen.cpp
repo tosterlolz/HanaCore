@@ -1,10 +1,11 @@
 // Minimal C++ screen wrapper that initialises Flanterm and provides print()
 #include "screen.hpp"
-#include "../boot/limine.h"
+#include "../../boot/limine.h"
+#include "../utils/logger.hpp"
 
 extern "C" {
-#include "../flanterm/src/flanterm.h"
-#include "../flanterm/src/flanterm_backends/fb.h"
+#include "../../flanterm/src/flanterm.h"
+#include "../../flanterm/src/flanterm_backends/fb.h"
 }
 
 #include <stdint.h>
@@ -126,7 +127,7 @@ void clear_screen() {
     if (term) {
         debug_puts("✓ Flanterm initialization successful!\n");
         flanterm_full_refresh(term);
-        flanterm_write(term, "Flanterm ready!\n", 16);
+        log_ok("Flanterm Terminal Ready!");
         flanterm_flush(term);
     } else {
         debug_puts("✗ Flanterm initialization failed. Using debug port only.\n");

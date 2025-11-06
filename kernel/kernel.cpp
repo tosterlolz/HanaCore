@@ -1,7 +1,9 @@
-#include "screen.hpp"
+#include "drivers/screen.hpp"
 #include "drivers/framebuffer.hpp"
-#include "nanoprintf.h"
-
+#include "./libs/nanoprintf.h"
+#include "arch/gdt.hpp"
+#include "arch/idt.hpp"
+#include "utils/logger.hpp"
 // Linker script symbols for init/fini arrays
 extern "C" {
     extern void (*__init_array_start)();
@@ -57,33 +59,36 @@ extern "C" void kernel_main() {
     // Call global constructors
     call_constructors();
     print("✓ Global constructors called.\n");
+        // Install GDT and IDT early
+    gdt_install();
+    idt_install();
     clear_screen();
-    print("🎉 HanaCore Kernel Initialized!\n");
-    print("Bootloader: Limine (x86_64)\n");
-    print("Welcome to HanaCore — minimalist C++ OS kernel.\n");
-    print("System ready.\n\n");
+    log_ok("HanaCore Kernel Initialized!");
+    log_info("Bootloader: Limine (x86_64)");
+    log_info("Welcome to HanaCore — minimalist C++ OS kernel.");
+    log_info("System ready.");
     // Try to initialize framebuffer for graphics
     if (framebuffer_init()) {
-        print("✓ Framebuffer initialized!\n");
+        log_ok("Framebuffer initialized!");
+
+        // uint32_t width = framebuffer_get_width();
+        // uint32_t height = framebuffer_get_height();
         
-        uint32_t width = framebuffer_get_width();
-        uint32_t height = framebuffer_get_height();
+        // // Draw some graphics
+        // uint32_t red = framebuffer_rgb(255, 0, 0);
+        // uint32_t green = framebuffer_rgb(0, 255, 0);
+        // uint32_t blue = framebuffer_rgb(0, 0, 255);
+        // uint32_t yellow = framebuffer_rgb(255, 255, 0);
         
-        // Draw some graphics
-        uint32_t red = framebuffer_rgb(255, 0, 0);
-        uint32_t green = framebuffer_rgb(0, 255, 0);
-        uint32_t blue = framebuffer_rgb(0, 0, 255);
-        uint32_t yellow = framebuffer_rgb(255, 255, 0);
-        
-        // Draw circles
-        framebuffer_draw_filled_circle(width / 2, height / 2, 100, red);
-        framebuffer_draw_filled_circle(width / 4, height / 4, 50, green);
-        framebuffer_draw_filled_circle(3 * width / 4, height / 4, 50, blue);
-        framebuffer_draw_filled_circle(width / 4, 3 * height / 4, 50, yellow);
-        
-        print("✓ Graphics rendered!\n");
+        // // Draw circles
+        // framebuffer_draw_filled_circle(width / 2, height / 2, 100, red);
+        // framebuffer_draw_filled_circle(width / 4, height / 4, 50, green);
+        // framebuffer_draw_filled_circle(3 * width / 4, height / 4, 50, blue);
+        // framebuffer_draw_filled_circle(width / 4, 3 * height / 4, 50, yellow);
+
+        log_ok("Graphics rendered!");
     } else {
-        print("⚠ Framebuffer not available\n");
+        log_fail("Framebuffer not available");
     }
     
     serial_puts("Kernel initialization complete.\n");

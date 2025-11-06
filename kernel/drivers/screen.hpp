@@ -3,7 +3,7 @@
 #include <stddef.h>
 
 /* Use the Limine-provided definitions for requests and responses. */
-#include "../boot/limine.h"
+#include "../../boot/limine.h"
 
 #ifdef __cplusplus
 extern "C" {

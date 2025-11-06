@@ -1,5 +1,6 @@
 #include "framebuffer.hpp"
-#include "../screen.hpp"
+#include "../utils/logger.hpp"
+#include "screen.hpp"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -17,14 +18,20 @@ extern "C" {
     extern volatile struct limine_hhdm_request limine_hhdm_request;
 }
 
+// Screen logging function provided by drivers/screen.cpp
+extern "C" void print(const char*);
+
 bool framebuffer_init() {
     volatile struct limine_framebuffer_response* resp = framebuffer_request.response;
     
     if (!resp) {
+        // No framebuffer response
+        print("[FAIL] No Limine framebuffer response\n");
         return false;
     }
     
     if (resp->framebuffer_count == 0) {
+        print("[FAIL] Limine returned zero framebuffers\n");
         return false;
     }
     fb_global = resp->framebuffers[0];
@@ -38,6 +45,7 @@ bool framebuffer_init() {
     // on a higher-half kernel (which causes crashes/bootloops).
     if (limine_hhdm_request.response == NULL) {
         fb_virt = NULL;
+        print("[FAIL] No HHDM provided by Limine; refusing to map framebuffer\n");
         return false;
     }
 
@@ -56,6 +64,7 @@ bool framebuffer_init() {
         fb_virt = (uint32_t *)(hhdm_off + fb_addr);
     }
 
+    log_ok("Framebuffer initialized successfully");
     return true;
 }
 
