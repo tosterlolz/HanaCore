@@ -5,6 +5,7 @@
 #include "arch/gdt.hpp"
 #include "arch/idt.hpp"
 #include "utils/logger.hpp"
+#include "filesystem/ext2.hpp"
 
 // Linker script symbols for init/fini arrays
 extern "C" {
@@ -103,6 +104,9 @@ extern "C" void kernel_main() {
     log_info("System ready.");
     // Try to initialize framebuffer for graphics
     
+        // Try to initialize ext2 rootfs from a module named "rootfs.img"
+        ext2_init_from_module("rootfs.img");
+
         // Try to find a Limine module named "shell.elf" and execute it (ring-0)
         if (module_request.response) {
             volatile struct limine_module_response* mresp = module_request.response;

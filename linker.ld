@@ -40,6 +40,9 @@ SECTIONS
     *(COMMON)
   }
 
+  /* Mark end of kernel image for bump allocator */
+  __kernel_end = .;
+
   /* Discard unneeded sections */
   /DISCARD/ : {
     *(.note.GNU-stack)
