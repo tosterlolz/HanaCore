@@ -1,5 +1,5 @@
 // Minimal C++ screen wrapper that initialises Flanterm and provides print()
-#include "screen.h"
+#include "screen.hpp"
 #include "../boot/limine.h"
 
 extern "C" {

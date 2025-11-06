@@ -21,7 +21,8 @@ build-kernel:
     {{cc}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c flanterm/src/flanterm_backends/fb.c -o build/flanterm_fb.o
     {{cc}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c kernel/limine_entry.c -o build/limine_entry.o
     {{cc}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c kernel/nanoprintf.c -o build/nanoprintf.o
-    {{ld}} -m elf_x86_64 -T linker.ld -o build/kernel.elf build/limine_entry.o build/kernel.o build/framebuffer.o build/screen.o build/nanoprintf.o build/flanterm.o build/flanterm_fb.o
+    {{cc}} -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-stack-protector -c kernel/libc.c -o build/libc.o
+    {{ld}} -m elf_x86_64 -T linker.ld -o build/kernel.elf build/limine_entry.o build/kernel.o build/framebuffer.o build/screen.o build/nanoprintf.o build/libc.o build/flanterm.o build/flanterm_fb.o
     cp build/kernel.elf build/iso_root/boot/kernel
 
 build-image: build-kernel
