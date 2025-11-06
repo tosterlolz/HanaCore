@@ -11,19 +11,21 @@ static uint32_t fb_pitch = 0;
 
 // Framebuffer request (defined in screen.c)
 extern "C" {
-    extern struct limine_framebuffer_request framebuffer_request;
+    extern volatile struct limine_framebuffer_request framebuffer_request;
 }
 
 bool framebuffer_init() {
-    if (!framebuffer_request.response) {
+    volatile struct limine_framebuffer_response* resp = framebuffer_request.response;
+    
+    if (!resp) {
         return false;
     }
     
-    if (framebuffer_request.response->framebuffer_count == 0) {
+    if (resp->framebuffer_count == 0) {
         return false;
     }
     
-    fb_global = framebuffer_request.response->framebuffers[0];
+    fb_global = resp->framebuffers[0];
     fb_width = fb_global->width;
     fb_height = fb_global->height;
     fb_pitch = fb_global->pitch;

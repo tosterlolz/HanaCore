@@ -46,7 +46,7 @@ static void flanterm_free(void* ptr, size_t size) {
 }
 
 __attribute__((used, section(".limine_requests")))
-struct limine_framebuffer_request framebuffer_request = {
+volatile struct limine_framebuffer_request framebuffer_request = {
     .id = {0x9d5827dcd881dd7b, 0xa3148604f6fab11b, 0, 0},
     .revision = 0,
     .response = NULL
@@ -57,6 +57,7 @@ static inline void debug_putchar(char c) {
 }
 
 static void debug_puts(const char* str) {
+    if (!str) return;
     while (*str) {
         debug_putchar(*str++);
     }
@@ -73,18 +74,21 @@ void clear_screen() {
     }
     
     debug_puts("Checking for framebuffer response...\n");
-    if (!framebuffer_request.response) {
+    
+    volatile struct limine_framebuffer_response* resp = framebuffer_request.response;
+    
+    if (!resp) {
         debug_puts("⚠ WARNING: No framebuffer response from Limine\n");
         debug_puts("Flanterm unavailable - using debug port only\n");
         return;
     }
     
-    if (framebuffer_request.response->framebuffer_count == 0) {
+    if (resp->framebuffer_count == 0) {
         debug_puts("⚠ WARNING: Framebuffer count is zero\n");
         return;
     }
     
-    struct limine_framebuffer* fb = framebuffer_request.response->framebuffers[0];
+    struct limine_framebuffer* fb = resp->framebuffers[0];
     debug_puts("✓ Framebuffer found - initializing Flanterm...\n");
     
     term = flanterm_fb_init(
@@ -126,6 +130,8 @@ void clear_screen() {
 }
 
 void print(const char* str) {
+    if (!str) return;
+    
     if (!term) {
         debug_puts("TERM_NOT_INIT:");
         debug_puts(str);

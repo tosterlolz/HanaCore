@@ -33,8 +33,6 @@ struct limine_framebuffer_request {
     struct limine_framebuffer_response *response;
 };
 
-extern struct limine_framebuffer_request framebuffer_request;
-
 void clear_screen();
 void print(const char* str);
 

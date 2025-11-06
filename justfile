@@ -1,22 +1,22 @@
 set shell := ["bash", "-cu"]
 
-arch := "x86_64-elf"
-# Use string concatenation so the variable expands to e.g. x86_64-elf-g++
-cc := arch + "-gcc"
-cxx := arch + "-g++"
+# Use system compilers
+prefix := ""
+cc := "gcc"
+cxx := "g++"
 as := "nasm"
-ld := arch + "-ld"
-objcopy := arch + "-objcopy"
+ld := "ld"
+objcopy := "objcopy"
 
 @default:
     just build
 
 build-kernel:
     mkdir -p build/iso_root/boot
-    {{cxx}} -ffreestanding -mcmodel=kernel -mno-red-zone -c kernel/kernel.cpp -o build/kernel.o
-    {{cxx}} -ffreestanding -mcmodel=kernel -mno-red-zone -c kernel/drivers/framebuffer.cpp -o build/framebuffer.o
-    {{cc}} -ffreestanding -mcmodel=kernel -mno-red-zone -c kernel/screen.c -o build/screen.o
-    {{cc}} -ffreestanding -mcmodel=kernel -mno-red-zone -c kernel/limine_entry.c -o build/limine_entry.o
+    {{cxx}} -ffreestanding -nostdlib -mno-red-zone -fno-exceptions -fno-rtti -fno-stack-protector -c kernel/kernel.cpp -o build/kernel.o
+    {{cxx}} -ffreestanding -nostdlib -mno-red-zone -fno-exceptions -fno-rtti -fno-stack-protector -c kernel/drivers/framebuffer.cpp -o build/framebuffer.o
+    {{cc}} -ffreestanding -nostdlib -mno-red-zone -fno-stack-protector -c kernel/screen.c -o build/screen.o
+    {{cc}} -ffreestanding -nostdlib -mno-red-zone -fno-stack-protector -c kernel/limine_entry.c -o build/limine_entry.o
     {{ld}} -T linker.ld -o build/kernel.elf build/limine_entry.o build/kernel.o build/framebuffer.o build/screen.o
     cp build/kernel.elf build/iso_root/boot/kernel
 

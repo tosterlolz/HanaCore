@@ -14,6 +14,7 @@ static inline void serial_putchar(char c) {
 }
 
 static void serial_puts(const char* str) {
+    if (!str) return;
     while (*str) {
         if (*str == '\n') {
             serial_putchar('\r');
@@ -24,8 +25,13 @@ static void serial_puts(const char* str) {
 
 // Call global constructors
 static void call_constructors() {
-    for (void (**func)() = &__init_array_start; func < &__init_array_end; func++) {
-        if (*func) {
+    // Safely iterate through init array
+    if (&__init_array_start == 0 || &__init_array_end == 0) {
+        return;
+    }
+    
+    for (void (**func)() = &__init_array_start; func != &__init_array_end; func++) {
+        if (*func != nullptr) {
             (*func)();
         }
     }
@@ -33,8 +39,13 @@ static void call_constructors() {
 
 // Call global destructors
 static void call_destructors() {
-    for (void (**func)() = &__fini_array_start; func < &__fini_array_end; func++) {
-        if (*func) {
+    // Safely iterate through fini array
+    if (&__fini_array_start == 0 || &__fini_array_end == 0) {
+        return;
+    }
+    
+    for (void (**func)() = &__fini_array_start; func != &__fini_array_end; func++) {
+        if (*func != nullptr) {
             (*func)();
         }
     }
@@ -42,22 +53,6 @@ static void call_destructors() {
 
 extern "C" void kernel_main() {
     serial_puts("\n=== HanaCore Kernel Starting ===\n");
-    
-    // Debug: Check framebuffer request before constructors
-    extern struct limine_framebuffer_request framebuffer_request;
-    char hex_buf[32];
-    
-    // Print framebuffer request address
-    __asm__ volatile("outb %0, $0xe9" : : "a"('D'));
-    __asm__ volatile("outb %0, $0xe9" : : "a"('B'));
-    __asm__ volatile("outb %0, $0xe9" : : "a"('G'));
-    __asm__ volatile("outb %0, $0xe9" : : "a"(':'));
-    
-    serial_puts("\nFramebuffer request ptr: ");
-    serial_puts((const char*)&framebuffer_request);
-    serial_puts("\nFramebuffer response ptr: ");
-    serial_puts((const char*)framebuffer_request.response);
-    serial_puts("\n");
     
     // Call global constructors
     call_constructors();
@@ -67,13 +62,6 @@ extern "C" void kernel_main() {
     print("Bootloader: Limine (x86_64)\n");
     print("Welcome to HanaCore — minimalist C++ OS kernel.\n");
     print("System ready.\n\n");
-    
-    // Debug: Check framebuffer after constructors
-    if (framebuffer_request.response) {
-        print("✓ Framebuffer response is NOT NULL!\n");
-    } else {
-        print("✗ Framebuffer response is NULL\n");
-    }
     
     // Try to initialize framebuffer for graphics
     if (framebuffer_init()) {
