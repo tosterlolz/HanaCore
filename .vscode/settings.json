@@ -4,6 +4,7 @@
         "atomic": "cpp",
         "format": "cpp",
         "iomanip": "cpp",
-        "istream": "cpp"
+        "istream": "cpp",
+        "cstdint": "cpp"
     }
 }

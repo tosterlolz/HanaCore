@@ -6,11 +6,11 @@
 
 // Global framebuffer state
 static struct limine_framebuffer* fb_global = NULL;
-static uint32_t fb_width = 0;
-static uint32_t fb_height = 0;
-static uint32_t fb_pitch = 0;
+static uint64_t fb_width = 0;
+static uint64_t fb_height = 0;
+static uint64_t fb_pitch = 0;
 // Kernel virtual pointer to the framebuffer (computed using Limine HHDM)
-static uint32_t* fb_virt = NULL;
+static uint8_t* fb_virt = NULL;
 
 // Framebuffer request (defined in screen.c) and HHDM request (provided by Limine)
 extern "C" {
@@ -57,11 +57,11 @@ bool framebuffer_init() {
        and use it directly. Otherwise, treat it as a physical address and
        add the HHDM offset. This avoids double-adding the offset which
        would produce an invalid pointer. */
-    uint64_t fb_addr = (uint64_t)fb_global->address;
-    if (fb_addr >= hhdm_off) {
-        fb_virt = (uint32_t *)fb_addr;
+    uintptr_t fb_addr = (uintptr_t)fb_global->address;
+    if ((uint64_t)fb_addr >= hhdm_off) {
+        fb_virt = (uint8_t*)fb_addr;
     } else {
-        fb_virt = (uint32_t *)(hhdm_off + fb_addr);
+        fb_virt = (uint8_t*)( (uintptr_t)hhdm_off + fb_addr );
     }
 
     log_ok("Framebuffer initialized successfully");
@@ -73,14 +73,23 @@ bool framebuffer_available() {
 }
 
 void framebuffer_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
-    if (!fb_global || x >= fb_width || y >= fb_height) {
+    if (!fb_global || x >= (uint32_t)fb_width || y >= (uint32_t)fb_height) {
         return;
     }
     if (fb_virt == NULL) return;
 
-    uint32_t pixel_offset = y * fb_pitch + x * (fb_global->bpp / 8);
-    uint32_t* pixel = (uint32_t*)((uint8_t*)fb_virt + pixel_offset);
-    *pixel = color;
+    uint64_t bytes_per_pixel = (fb_global->bpp / 8);
+    uint64_t pixel_offset = (uint64_t)y * fb_pitch + (uint64_t)x * bytes_per_pixel;
+    uint8_t* pixel_addr = fb_virt + pixel_offset;
+    // Write 32-bit pixel if framebuffer has at least 32bpp, otherwise write up to available bytes
+    if (bytes_per_pixel >= 4) {
+        *(uint32_t*)pixel_addr = color;
+    } else {
+        // write least-significant bytes of color
+        for (uint32_t i = 0; i < bytes_per_pixel; ++i) {
+            pixel_addr[i] = (uint8_t)((color >> (8 * i)) & 0xFF);
+        }
+    }
 }
 
 void framebuffer_draw_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint32_t color) {
@@ -147,20 +156,34 @@ void framebuffer_clear(uint32_t color) {
     if (!fb_global) return;
     if (fb_virt == NULL) return;
 
-    uint32_t* pixels = fb_virt;
-    uint32_t pixel_count = (fb_pitch / 4) * fb_height;
+    uint64_t bytes = fb_pitch * fb_height;
+    uint64_t bpp_bytes = fb_global->bpp / 8;
 
-    for (uint32_t i = 0; i < pixel_count; i++) {
-        pixels[i] = color;
+    // If framebuffer is 32bpp and pitch is multiple of 4, fill as words for speed
+    if (bpp_bytes >= 4 && (fb_pitch % 4) == 0) {
+        uint32_t *pixels = (uint32_t*)fb_virt;
+        uint64_t pixel_count = (fb_pitch / 4) * fb_height;
+        for (uint64_t i = 0; i < pixel_count; i++) pixels[i] = color;
+    } else {
+        // Fallback: byte-wise fill using the provided color
+        for (uint64_t y = 0; y < fb_height; ++y) {
+            uint8_t *row = fb_virt + y * fb_pitch;
+            for (uint64_t x = 0; x < fb_width; ++x) {
+                uint8_t *pixel = row + x * bpp_bytes;
+                for (uint32_t b = 0; b < bpp_bytes; ++b) {
+                    pixel[b] = (uint8_t)((color >> (8 * b)) & 0xFF);
+                }
+            }
+        }
     }
 }
 
 uint32_t framebuffer_get_width() {
-    return fb_width;
+    return (uint32_t)fb_width;
 }
 
 uint32_t framebuffer_get_height() {
-    return fb_height;
+    return (uint32_t)fb_height;
 }
 
 uint32_t framebuffer_rgb(uint8_t r, uint8_t g, uint8_t b) {

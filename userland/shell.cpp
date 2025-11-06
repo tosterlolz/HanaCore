@@ -1,27 +1,8 @@
-# HanaCore
-## a simple ToyOS in C++ i guess
-
-## Dependencies:
-* x86_64-gcc, ld
-* nasm
-* justfile
-* qemu
-* brain
-
-## how to build
-```bash
-just build # this build the kernel
-
-just run # this builds the kernel and runs qemu
-```
-
-## build your own program of this kernel
-### example shell code
-```cpp
-// shell.cpp
 #include "shell.hpp"
+
 #include <stddef.h>
 
+// Use C linkage to match kernel symbols
 extern "C" {
 	void print(const char*);
 	char keyboard_poll_char(void);
@@ -87,20 +68,6 @@ extern "C" void shell_main(void) {
 			continue;
 		}
 
+		// Ignore other control codes
 	}
 }
-// shell.hpp
-#pragma once
-#include <stdint.h>
-
-extern "C" void log_ok(const char *msg);
-extern "C" void log_fail(const char *msg);
-extern "C" void log_info(const char *msg);
-extern "C" void log_hex64(const char *label, uint64_t value);
-
-```
-
-### Build
-```bash
-x86_64-elf-g++ -ffreestanding -nostdlib -mcmodel=kernel -mno-red-zone -fno-exceptions -fno-rtti -fno-stack-protector -c userland/shell.cpp -o build/shell.o
-```
