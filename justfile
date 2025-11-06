@@ -1,52 +1,46 @@
 set shell := ["bash", "-cu"]
 
-arch := "i686-elf"
-# Use string concatenation so the variable expands to e.g. i686-elf-g++
+arch := "x86_64-elf"
+# Use string concatenation so the variable expands to e.g. x86_64-elf-g++
+cc := arch + "-gcc"
 cxx := arch + "-g++"
 as := "nasm"
 ld := arch + "-ld"
 objcopy := arch + "-objcopy"
 
-kernel_sources := "kernel/kernel.cpp kernel/screen.cpp"
-kernel_objs := "build/kernel.o build/screen.o"
-boot_obj := "build/boot.bin"
-
 @default:
     just build
 
 build-kernel:
-    mkdir -p build
-    {{cxx}} -ffreestanding -m32 -c kernel/kernel.cpp -o build/kernel.o
-    {{cxx}} -ffreestanding -m32 -c kernel/screen.cpp -o build/screen.o
-    {{ld}} -T linker.ld -m elf_i386 -o build/kernel.elf build/kernel.o build/screen.o
-    {{objcopy}} -O binary build/kernel.elf build/kernel.bin
+    mkdir -p build/iso_root/boot
+    {{cxx}} -ffreestanding -mcmodel=kernel -mno-red-zone -c kernel/kernel.cpp -o build/kernel.o
+    {{cxx}} -ffreestanding -mcmodel=kernel -mno-red-zone -c kernel/drivers/framebuffer.cpp -o build/framebuffer.o
+    {{cc}} -ffreestanding -mcmodel=kernel -mno-red-zone -c kernel/screen.c -o build/screen.o
+    {{cc}} -ffreestanding -mcmodel=kernel -mno-red-zone -c kernel/limine_entry.c -o build/limine_entry.o
+    {{ld}} -T linker.ld -o build/kernel.elf build/limine_entry.o build/kernel.o build/framebuffer.o build/screen.o
+    cp build/kernel.elf build/iso_root/boot/kernel
 
-build-boot:
-    mkdir -p build
-    # Assemble stage 1 boot sector (512 bytes, exactly)
-    {{as}} -f bin boot/boot1.asm -o build/boot1.bin
-    # Assemble stage 2 bootloader
-    {{as}} -f bin boot/boot2.asm -o build/boot2.bin
-    # Pad stage 2 to 512 bytes (or more as needed)
-    dd if=build/boot2.bin of=build/boot2.padded bs=512 count=1 conv=sync 2>/dev/null
-    # Combine: boot sector + stage 2 + kernel
-    cat build/boot1.bin build/boot2.padded > build/boot_combined.bin
+build-image: build-kernel
+    mkdir -p build/iso_root/boot
+    # Copy Limine files
+    cp limine-bootloader/limine-bios.sys build/iso_root/boot/
+    cp limine-bootloader/limine-bios-cd.bin build/iso_root/boot/
+    cp cfg/limine.conf build/iso_root/boot/
+    # Create ISO
+    xorriso -as mkisofs -b boot/limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table build/iso_root -o build/HanaCore.iso 2>/dev/null || echo "xorriso failed, trying without it..."
+    # Install Limine to ISO
+    limine-bootloader/limine bios-install build/HanaCore.iso 2>/dev/null || echo "Failed to install Limine (might need xorriso)"
 
-build: build-kernel build-boot build-image
-    echo "✅ HanaCore built -> build/HanaCore.bin"
+build: build-image
+    echo "✅ HanaCore ISO built -> build/HanaCore.iso"
 
-build-image: build-kernel build-boot
-    mkdir -p build
-    cat build/boot1.bin build/boot2.padded build/kernel.bin > build/HanaCore.bin
-    echo "✅ HanaCore built ($(stat -c%s build/HanaCore.bin) bytes) -> build/HanaCore.bin"
-
-run:
+run: build
     echo "🌸 Starting HanaCore in QEMU..."
-    qemu-system-i386 -drive format=raw,file=build/HanaCore.bin
+    qemu-system-x86_64 -cdrom build/HanaCore.iso
 
-run-cli:
+run-cli: build
     echo "🌸 Starting HanaCore in QEMU (serial/stdio)..."
-    qemu-system-i386 -drive format=raw,file=build/HanaCore.bin -serial stdio -monitor none -display none -no-reboot
+    qemu-system-x86_64 -cdrom build/HanaCore.iso -serial stdio -monitor none -display none -no-reboot
 
 clean:
     rm -rf build
