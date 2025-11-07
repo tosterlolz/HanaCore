@@ -4,8 +4,12 @@
 #include "./libs/nanoprintf.h"
 #include "arch/gdt.hpp"
 #include "arch/idt.hpp"
+#include "arch/pic.hpp"
+#include "arch/pit.hpp"
 #include "utils/logger.hpp"
-#include "filesystem/ext2.hpp"
+#include "filesystem/fat32.hpp"
+#include "scheduler/scheduler.hpp"
+#include "shell/shell.hpp"
 
 // Linker script symbols for init/fini arrays
 extern "C" {
@@ -103,43 +107,57 @@ extern "C" void kernel_main() {
     log_info("Welcome to HanaCore - minimalist C++ OS kernel.");
     log_info("System ready.");
     // Try to initialize framebuffer for graphics
-    
-        // Try to initialize ext2 rootfs from a module named "rootfs.img"
-        ext2_init_from_module("rootfs.img");
 
-        // Try to find a Limine module named "shell.elf" and execute it (ring-0)
-        if (module_request.response) {
-            volatile struct limine_module_response* mresp = module_request.response;
-            for (uint64_t i = 0; i < mresp->module_count; ++i) {
-                volatile struct limine_file* mod = mresp->modules[i];
-                const char* path = (const char*)(uintptr_t)mod->path;
-                if (ends_with(path, "shell.elf") || ends_with(path, "shell.bin")) {
-                    log_info("Found external shell module; executing in ring-0");
+    // Try to initialize fat33 rootfs from a module named "rootfs.img"
+    hanacore::fs::fat32_init_from_module("rootfs.img");
 
-                    // Derive a usable virtual address (respect HHDM offset if provided)
-                    uintptr_t mod_addr = (uintptr_t)mod->address;
-                    uint8_t* mod_virt = (uint8_t*)mod_addr;
-                    if (limine_hhdm_request.response) {
-                        uint64_t off = limine_hhdm_request.response->offset;
-                        if ((uint64_t)mod_addr < off) mod_virt = (uint8_t*)(off + mod_addr);
-                    }
+    // Try to find a Limine module named "shell.elf" and execute it (ring-0)
+    if (module_request.response) {
+        volatile struct limine_module_response* mresp = module_request.response;
+        for (uint64_t i = 0; i < mresp->module_count; ++i) {
+            volatile struct limine_file* mod = mresp->modules[i];
+            const char* path = (const char*)(uintptr_t)mod->path;
+            if (ends_with(path, "shell.elf") || ends_with(path, "shell.bin")) {
+                log_info("Found external shell module; executing in ring-0");
 
-                    // Jump to module as a function. The module is expected to be a
-                    // flat binary with an entry point at its start (not ELF).
-                    void (*entry)(void) = (void(*)(void))mod_virt;
-                    entry();
-                    // If the module returns, continue boot.
-                    break;
+                // Derive a usable virtual address (respect HHDM offset if provided)
+                uintptr_t mod_addr = (uintptr_t)mod->address;
+                uint8_t* mod_virt = (uint8_t*)mod_addr;
+                if (limine_hhdm_request.response) {
+                    uint64_t off = limine_hhdm_request.response->offset;
+                    if ((uint64_t)mod_addr < off) mod_virt = (uint8_t*)(off + mod_addr);
                 }
+
+                // Jump to module as a function. The module is expected to be a
+                // flat binary with an entry point at its start (not ELF).
+                void (*entry)(void) = (void(*)(void))mod_virt;
+                entry();
+                // If the module returns, continue boot.
+                break;
             }
         }
+    }
 
-        // If no external shell was found, fall back to built-in shell
-        keyboard_init();
-        print("No external shell found — starting built-in shell.\n");
-        extern void shell_main(void);
-        shell_main();
-
-        // Should never reach here
-        for (;;) __asm__ volatile("hlt");
+    // If no external shell was found, fall back to built-in shell as a task
+    keyboard_init();
+    print("No external shell found — starting built-in shell as task.\n");
+    // Initialize scheduler and create a task for the built-in shell.
+    log_info("kernel: initializing scheduler");
+    init_scheduler();
+    log_info("kernel: scheduler initialized");
+    // Initialize legacy PIC and PIT so we get timer interrupts for preemption
+    pic_remap();
+    pit_init(100); // 100 Hz scheduler tick
+    log_info("PIT initialized (100Hz)");
+    int shell_pid = create_task((void(*)(void))hanacore::shell::shell_main);
+    log_info("kernel: created shell task");
+    log_hex64("kernel: shell pid", (uint64_t)shell_pid);
+    // Switch to the newly created task. After this call the scheduler will
+    // run tasks; kernel_main will stay halted here.
+    log_info("kernel: about to schedule_next()");
+    schedule_next();
+    log_info("kernel: returned from schedule_next()");
+    
+    // Should never reach here; idle.
+    for (;;) __asm__ volatile("hlt");
 }

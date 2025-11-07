@@ -1,4 +1,5 @@
 /* Very small vsnprintf implementation supporting %s, %d, %u, %x, %p, %c, %% */
+// this shit is ai generated dont blame me ok?
 #include "nanoprintf.h"
 #include "../drivers/screen.hpp"
 #include <stdint.h>

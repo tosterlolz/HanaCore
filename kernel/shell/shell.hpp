@@ -1,13 +1,10 @@
 // Built-in kernel shell header
 #pragma once
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+namespace hanacore {
+    namespace shell {
 
-// Start the simple shell. This function does not return.
-void shell_main(void);
-
-#ifdef __cplusplus
-}
-#endif
+        void shell_main(void);
+    
+    } // namespace shell
+} // namespace hanacore

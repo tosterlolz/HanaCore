@@ -24,14 +24,6 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 add_subdirectory(kernel)
-# Only add the userland subdirectory if it actually contains a CMakeLists.txt
-if (BUILD_USERLAND AND EXISTS "${CMAKE_SOURCE_DIR}/userland/CMakeLists.txt")
-  add_subdirectory(userland)
-else()
-  if(BUILD_USERLAND)
-    message(STATUS "userland CMakeLists.txt not found; skipping userland subdirectory")
-  endif()
-endif()
 
 # Install step: populate build/iso_root similar to previous justfile layout
 set(ISO_ROOT_DIR ${CMAKE_BINARY_DIR}/iso_root)
@@ -39,7 +31,6 @@ add_custom_target(install_iso ALL
   COMMENT "Populate ${ISO_ROOT_DIR} with boot and rootfs files (kernel and modules copied by their targets)"
 )
 
-# Copy Limine files (if present) during install_iso
 file(GLOB LIMINE_FILES
   "${CMAKE_SOURCE_DIR}/limine-bootloader/limine-bios.sys"
   "${CMAKE_SOURCE_DIR}/limine-bootloader/limine-bios-cd.bin"

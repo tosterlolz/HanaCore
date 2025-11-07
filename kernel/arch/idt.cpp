@@ -40,6 +40,12 @@ static void set_idt_entry(int vec, void (*handler)(), uint16_t sel, uint8_t type
     idt[vec].zero = 0;
 }
 
+// Exported helper to set a single IDT entry after the table has been created.
+extern "C" void idt_set_handler(int vec, void (*handler)()) {
+    // Use kernel code segment selector 0x08 and present interrupt gate 0x8E
+    set_idt_entry(vec, handler, 0x08, 0x8E);
+}
+
 extern "C" void idt_install() {
     for (int i = 0; i < 256; ++i) {
         set_idt_entry(i, isr_common_stub, 0x08, 0x8E); // present, interrupt gate
@@ -51,3 +57,15 @@ extern "C" void idt_install() {
     // Log success
     print("[OK] IDT installed\n");
 }
+
+// Namespaced C++ wrappers
+namespace hanacore { namespace arch { namespace idt {
+    void install() {
+        idt_install();
+    }
+
+    void set_handler(int vec, void (*handler)()) {
+        idt_set_handler(vec, handler);
+    }
+
+}}}
