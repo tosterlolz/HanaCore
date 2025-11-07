@@ -29,6 +29,7 @@ extern "C" void builtin_ls_cmd(const char* path) {
 
     print("Listing directory: ");
     print(path);
+    print("\n");
 
     int rc = hanacore::fs::fat32_list_dir(path, ls_cb);
     if (rc != 0) {

@@ -31,6 +31,10 @@ namespace hanacore {
     int fat32_unlink(const char* path);
     int fat32_make_dir(const char* path);
     int fat32_remove_dir(const char* path);
+    // Write a file (create or overwrite) at `path` with the provided buffer.
+    // Requires the target filesystem to be mounted (call fat32_mount_ata_master
+    // to select ATA before writing). Returns 0 on success.
+    int fat32_write_file(const char* path, const void* buf, size_t len);
 
     } // namespace fs
 } // namespace hanacore

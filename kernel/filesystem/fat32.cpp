@@ -512,6 +512,73 @@ int fat32_remove_dir(const char* path) {
     return remove_dir_entry_by_path(path, true);
 }
 
+// Write a file to the currently-mounted filesystem (overwrite if exists).
+int fat32_write_file(const char* path, const void* buf, size_t len) {
+    if (!fat32_ready || !path) return -1;
+    // remove existing entry if present
+    remove_dir_entry_by_path(path, true);
+
+    // prepare parent and name
+    uint32_t parent = 0; char name[64];
+    if (get_parent_cluster_and_name(path, &parent, name, sizeof(name)) != 0) return -1;
+    char name11[11]; if (!format_short_name(name, name11)) return -1;
+
+    // if len==0 create empty file (no clusters)
+    if (len == 0) {
+        if (write_dir_entry(parent, name11, 0x20, 0, 0) != 0) return -1;
+        return 0;
+    }
+
+    size_t remaining = len;
+    const uint8_t* p = (const uint8_t*)buf;
+    uint32_t first_cluster = 0;
+    uint32_t prev_cluster = 0;
+    uint32_t cluster_bytes = sectors_per_cluster * bytes_per_sector;
+
+    while (remaining > 0) {
+        uint32_t c = alloc_cluster();
+        if (c == 0) { // cleanup allocated chain
+            if (first_cluster) free_cluster_chain(first_cluster);
+            return -1;
+        }
+        if (!first_cluster) first_cluster = c;
+        if (prev_cluster) {
+            // link previous -> c
+            if (write_fat_entry(prev_cluster, c) != 0) { free_cluster_chain(first_cluster); return -1; }
+        }
+        // mark c as end-of-chain for now
+        if (write_fat_entry(c, 0x0FFFFFFF) != 0) { free_cluster_chain(first_cluster); return -1; }
+
+        // write cluster sectors
+        for (uint32_t s = 0; s < sectors_per_cluster; ++s) {
+            uint32_t lba = cluster_to_lba(c) + s;
+            uint8_t sector_buf[4096];
+            size_t to_copy = (remaining < bytes_per_sector) ? remaining : bytes_per_sector;
+            // zero then copy
+            for (uint32_t i = 0; i < bytes_per_sector; ++i) sector_buf[i] = 0;
+            for (size_t i = 0; i < to_copy; ++i) sector_buf[i] = p[i];
+            if (ata_write_sector(lba, sector_buf) != 0) { free_cluster_chain(first_cluster); return -1; }
+            p += to_copy;
+            remaining -= to_copy;
+            if (remaining == 0) {
+                // mark end-of-chain already set
+                break;
+            }
+        }
+
+        prev_cluster = c;
+    }
+
+    // Now write directory entry pointing to first_cluster and filesize len
+    if (write_dir_entry(parent, name11, 0x20, first_cluster, (uint32_t)len) != 0) {
+        // On failure, free clusters
+        free_cluster_chain(first_cluster);
+        return -1;
+    }
+
+    return 0;
+}
+
 
 
 // =================== Initialization ===================
@@ -598,11 +665,22 @@ int fat32_init_from_memory(const void* data, size_t size) {
 
     // Basic validation of BPB values
     if (bytes_per_sector == 0 || bytes_per_sector > 4096) {
-        hanacore::utils::log_info_cpp("[FAT32] init_from_memory: unsupported bytes_per_sector");
+        char tmp[160];
+        npf_snprintf(tmp, sizeof(tmp), "[FAT32] init_from_memory: unsupported bytes_per_sector=%u (module size=%u)", bytes_per_sector, (unsigned)size);
+        hanacore::utils::log_info_cpp(tmp);
+        // dump first 32 bytes for debugging
+        char hex[128]; int off = 0;
+        for (int i = 0; i < 32 && (size_t)i < size; ++i) off += npf_snprintf(hex + off, sizeof(hex) - off, "%02X ", (unsigned)sector[i]);
+        hanacore::utils::log_info_cpp(hex);
         return -1;
     }
     if (sectors_per_cluster == 0 || sectors_per_cluster > 128) {
-        hanacore::utils::log_info_cpp("[FAT32] init_from_memory: invalid sectors_per_cluster");
+        char tmp[160];
+        npf_snprintf(tmp, sizeof(tmp), "[FAT32] init_from_memory: invalid sectors_per_cluster=%u (module size=%u)", sectors_per_cluster, (unsigned)size);
+        hanacore::utils::log_info_cpp(tmp);
+        char hex[128]; int off = 0;
+        for (int i = 0; i < 32 && (size_t)i < size; ++i) off += npf_snprintf(hex + off, sizeof(hex) - off, "%02X ", (unsigned)sector[i]);
+        hanacore::utils::log_info_cpp(hex);
         return -1;
     }
 
@@ -639,11 +717,43 @@ int fat32_list_dir(const char* path, void (*cb)(const char* name)) {
     }
     if (requested_drive != mounted_drive) {
         if (requested_drive == 0) {
-            // try ATA
+            // try ATA (will set mounted_drive on success)
             fat32_init_from_ata();
         } else if (requested_drive == 1) {
-            // try module mounts
-            fat32_mount_all_letter_modules();
+            // Attempt to initialize from any Limine module that looks like
+            // a disk image (prefer names with .img/.bin or containing "rootfs").
+            if (module_request.response) {
+                volatile struct limine_module_response* resp = module_request.response;
+                for (uint64_t mi = 0; mi < resp->module_count; ++mi) {
+                    volatile struct limine_file* mod = resp->modules[mi];
+                    const char* mpath = (const char*)(uintptr_t)mod->path;
+                    if (mpath && limine_hhdm_request.response) {
+                        uint64_t hoff = limine_hhdm_request.response->offset;
+                        if ((uint64_t)mpath < hoff) mpath = (const char*)((uintptr_t)mpath + hoff);
+                    }
+                    bool candidate = false;
+                    if (mpath) {
+                        if (ends_with(mpath, ".img") || ends_with(mpath, ".bin")) candidate = true;
+                        if (!candidate && strstr(mpath, "rootfs")) candidate = true;
+                    }
+                    // also accept any sufficiently large module as a last resort
+                    if (!candidate && mod->size >= 512) candidate = true;
+                    if (!candidate) continue;
+
+                    uintptr_t mod_addr = (uintptr_t)mod->address;
+                    const void* mod_virt = (const void*)mod_addr;
+                    if (limine_hhdm_request.response) {
+                        uint64_t off = limine_hhdm_request.response->offset;
+                        if ((uint64_t)mod_addr < off) mod_virt = (const void*)(off + mod_addr);
+                    }
+                    if (fat32_init_from_memory(mod_virt, (size_t)mod->size) == 0) {
+                        mounted_drive = 1;
+                        hanacore::utils::log_ok_cpp("[FAT32] Mounted module image for drive 1:");
+                        if (mpath) hanacore::utils::log_ok_cpp(mpath);
+                        break;
+                    }
+                }
+            }
         }
     }
     // If caller provided a drive prefix, skip it for path traversal
@@ -1021,6 +1131,21 @@ void fat32_mount_all_letter_modules() {
 
     // First try to mount from any Limine-provided module image (e.g. rootfs.img)
     if (module_request.response) {
+        // Quick-path: attempt to initialise from common rootfs module names
+        // first. This handles cases where the module list/order differs and
+        // ensures rootfs.img is preferred when present.
+        if (!fat32_ready) {
+            if (fat32_init_from_module("rootfs.img") == 0) {
+                hanacore::utils::log_ok_cpp("[FAT32] Mounted module rootfs.img (quick-path)");
+                fat32_list_mounts([](const char* line) { hanacore::utils::log_info_cpp(line); });
+                return;
+            }
+            if (fat32_init_from_module("rootfs.bin") == 0) {
+                hanacore::utils::log_ok_cpp("[FAT32] Mounted module rootfs.bin (quick-path)");
+                fat32_list_mounts([](const char* line) { hanacore::utils::log_info_cpp(line); });
+                return;
+            }
+        }
         volatile struct limine_module_response* resp = module_request.response;
         // Diagnostic: list available modules so we can match correctly
         {
@@ -1132,13 +1257,17 @@ extern "C" void fat32_mount_all_letter_modules() {
 }
 
 int fat32_mount_ata_master(int drive_number) {
-    hanacore::utils::log_ok_cpp("[FAT32] Mounting ATA master as %d:", drive_number);
+    char msg[64];
+    npf_snprintf(msg, sizeof(msg), "[FAT32] Mounting ATA master as %d:", drive_number);
+    hanacore::utils::log_ok_cpp(msg);
     (void)drive_number; // currently unused beyond logging
     return hanacore::fs::fat32_init_from_ata();
 }
 
 int fat32_mount_ata_slave(int drive_number) {
-    hanacore::utils::log_ok_cpp("[FAT32] Mounting ATA slave as %d:", drive_number);
+    char msg[64];
+    npf_snprintf(msg, sizeof(msg), "[FAT32] Mounting ATA slave as %d:", drive_number);
+    hanacore::utils::log_ok_cpp(msg);
     (void)drive_number;
     return hanacore::fs::fat32_init_from_ata();
 }

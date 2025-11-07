@@ -39,8 +39,9 @@ add_dependencies(install_iso mkrootfs)
 add_custom_command(TARGET install_iso POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory ${ISO_ROOT_DIR}/boot
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/rootfs.img ${ISO_ROOT_DIR}/boot/rootfs.img
-  # Also copy rootfs.img to the ISO root (some setups expose modules differently)
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/rootfs.img ${ISO_ROOT_DIR}/rootfs.img
+  # (Previously also copied to ${ISO_ROOT_DIR}/rootfs.img which created
+  # duplicate module entries in limine.conf. Keep a single copy under
+  # /boot/rootfs.img to avoid exposing the same module twice.)
   COMMENT "Copy rootfs.img into ISO staging area"
 )
 

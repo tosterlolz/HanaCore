@@ -9,6 +9,12 @@ extern "C" {
 #include "../../flanterm/src/flanterm_backends/fb.h"
 }
 
+#include <stdarg.h>
+
+// Declare vsnprintf with C linkage so calls from this C++ TU link to the
+// freestanding implementation in kernel/libs/libc.c
+extern "C" int vsnprintf(char* s, size_t n, const char* fmt, va_list ap);
+
 #include <stdint.h>
 #include <stddef.h>
 
@@ -210,127 +216,13 @@ static size_t uint_to_str(uint64_t value, char* buf, int base, bool uppercase) {
     return i;
 }
 
-// freestanding sprintf: %s, %c, %d, %u, %x, %p, %%
-int sprintf(char* buffer, const char* fmt, ...) {
-    char* buf_ptr = buffer;
-    va_list args;
-    va_start(args, fmt);
-
-    while (*fmt) {
-        if (*fmt != '%') {
-            *buf_ptr++ = *fmt++;
-            continue;
-        }
-        ++fmt;
-        switch (*fmt) {
-            case 's': {
-                const char* s = va_arg(args, const char*);
-                while (s && *s) *buf_ptr++ = *s++;
-                break;
-            }
-            case 'c': {
-                *buf_ptr++ = (char)va_arg(args, int);
-                break;
-            }
-            case 'd': {
-                int v = va_arg(args, int);
-                if (v < 0) { *buf_ptr++ = '-'; v = -v; }
-                char num[32]; uint_to_str((uint32_t)v, num, 10, false);
-                const char* p = num; while (*p) *buf_ptr++ = *p++;
-                break;
-            }
-            case 'u': {
-                unsigned int v = va_arg(args, unsigned int);
-                char num[32]; uint_to_str(v, num, 10, false);
-                const char* p = num; while (*p) *buf_ptr++ = *p++;
-                break;
-            }
-            case 'x': {
-                unsigned int v = va_arg(args, unsigned int);
-                char num[32]; uint_to_str(v, num, 16, false);
-                const char* p = num; while (*p) *buf_ptr++ = *p++;
-                break;
-            }
-            case 'p': {
-                void* ptr = va_arg(args, void*);
-                uintptr_t v = (uintptr_t)ptr;
-                *buf_ptr++ = '0'; *buf_ptr++ = 'x';
-                char num[32]; uint_to_str(v, num, 16, false);
-                const char* p = num; while (*p) *buf_ptr++ = *p++;
-                break;
-            }
-            case '%': *buf_ptr++ = '%'; break;
-            default: *buf_ptr++ = '?'; break;
-        }
-        ++fmt;
-    }
-
-    *buf_ptr = '\0';
-    va_end(args);
-    return (int)(buf_ptr - buffer);
-}
-
-// Print formatted string directly to Flanterm
+// Print formatted string directly to Flanterm (bounded)
 void print_fmt(const char* fmt, ...) {
-    char buf[512]; // statyczny bufor
+    char buf[512]; // bounded buffer
     va_list args;
     va_start(args, fmt);
-    vsprintf(buf, fmt, args);
+    // use the freestanding vsnprintf (C linkage) implemented in libc.c
+    vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    print(buf); // używa Twojego Flanterm print()
-}
-
-// vsprintf implementacja dla print_fmt
-int vsprintf(char* buffer, const char* fmt, va_list args) {
-    char* buf_ptr = buffer;
-    while (*fmt) {
-        if (*fmt != '%') {
-            *buf_ptr++ = *fmt++;
-            continue;
-        }
-        ++fmt;
-        switch (*fmt) {
-            case 's': {
-                const char* s = va_arg(args, const char*);
-                while (s && *s) *buf_ptr++ = *s++;
-                break;
-            }
-            case 'c': {
-                *buf_ptr++ = (char)va_arg(args, int);
-                break;
-            }
-            case 'd': {
-                int v = va_arg(args, int);
-                if (v < 0) { *buf_ptr++ = '-'; v = -v; }
-                char num[32]; uint_to_str((uint32_t)v, num, 10, false);
-                const char* p = num; while (*p) *buf_ptr++ = *p++;
-                break;
-            }
-            case 'u': {
-                unsigned int v = va_arg(args, unsigned int);
-                char num[32]; uint_to_str(v, num, 10, false);
-                const char* p = num; while (*p) *buf_ptr++ = *p++;
-                break;
-            }
-            case 'x': {
-                unsigned int v = va_arg(args, unsigned int);
-                char num[32]; uint_to_str(v, num, 16, false);
-                const char* p = num; while (*p) *buf_ptr++ = *p++;
-                break;
-            }
-            case 'p': {
-                void* ptr = va_arg(args, void*);
-                uintptr_t v = (uintptr_t)ptr;
-                *buf_ptr++ = '0'; *buf_ptr++ = 'x';
-                char num[32]; uint_to_str(v, num, 16, false);
-                const char* p = num; while (*p) *buf_ptr++ = *p++;
-                break;
-            }
-            case '%': *buf_ptr++ = '%'; break;
-            default: *buf_ptr++ = '?'; break;
-        }
-        ++fmt;
-    }
-    *buf_ptr = '\0';
-    return (int)(buf_ptr - buffer);
+    print(buf); // uses Flanterm print()
 }

@@ -1,10 +1,11 @@
-#include "logger.hpp"
+#include <stdarg.h>
+#include <stdint.h>
 #include <stddef.h>
 #include "../drivers/screen.hpp"
+#include "../libs/libc.h"
 
 extern "C" void print(const char*);
 
-// ANSI color escape sequences (works in QEMU serial & Flanterm)
 #define ANSI_RESET   "\033[0m"
 #define ANSI_GREEN   "\033[32m"
 #define ANSI_RED     "\033[31m"
@@ -17,56 +18,105 @@ extern "C" void print(const char*);
 namespace hanacore {
 namespace utils {
 
-    static inline void print_color(const char* color, const char* tag, const char* msg) {
+    static void print_colorv(const char* color, const char* tag, const char* fmt, va_list args) {
+        char buf[512];
+        size_t pos = 0;
+
+        // kopiujemy tag do buf
+        for (const char* p = tag; *p && pos + 1 < sizeof(buf); ++p) buf[pos++] = *p;
+        if (pos + 1 < sizeof(buf)) buf[pos++] = ' ';
+
+        // formatujemy resztę wiadomości
+        int written = vsnprintf(buf + pos, sizeof(buf) - pos, fmt, args);
+        if (written < 0) return;
+
         print(color);
-        print(tag);
-        print(ANSI_RESET " ");
-        print(msg);
-        print("\n");
+        print(buf);
+        print(ANSI_RESET "\n");
     }
 
-    void log_ok(const char *msg) {
-        print_color(ANSI_GREEN, "[OK]", msg);
+    static void print_color(const char* color, const char* tag, const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        print_colorv(color, tag, fmt, args);
+        va_end(args);
     }
 
-    void log_fail(const char *msg) {
-        print_color(ANSI_RED, "[FAIL]", msg);
+    void log_ok(const char* fmt, ...) {
+        va_list args; va_start(args, fmt);
+        print_colorv(ANSI_GREEN, "[OK]", fmt, args);
+        va_end(args);
     }
 
-    void log_info(const char *msg) {
-        print_color(ANSI_CYAN, "[INFO]", msg);
+    void log_fail(const char* fmt, ...) {
+        va_list args; va_start(args, fmt);
+        print_colorv(ANSI_RED, "[FAIL]", fmt, args);
+        va_end(args);
     }
 
-    void log_debug(const char *msg) {
-        print_color(ANSI_GRAY, "[DEBUG]", msg);
+    void log_info(const char* fmt, ...) {
+        va_list args; va_start(args, fmt);
+        print_colorv(ANSI_CYAN, "[INFO]", fmt, args);
+        va_end(args);
     }
 
-    void log_hex64(const char *label, uint64_t value) {
+    void log_debug(const char* fmt, ...) {
+        va_list args; va_start(args, fmt);
+        print_colorv(ANSI_GRAY, "[DEBUG]", fmt, args);
+        va_end(args);
+    }
+
+    void log_hex64(const char* label, uint64_t value) {
         if (!label) label = "";
         char buf[64];
-        size_t pos = 0;
-        for (const char* p = label; *p && pos + 1 < sizeof(buf); ++p) buf[pos++] = *p;
-        if (pos + 2 < sizeof(buf)) { buf[pos++] = '0'; buf[pos++] = 'x'; }
-
-        const char* hex = "0123456789ABCDEF";
-        for (int i = 15; i >= 0 && pos + 1 < sizeof(buf); --i) {
-            uint8_t nib = (value >> (i * 4)) & 0xF;
-            buf[pos++] = hex[nib];
-        }
-        if (pos < sizeof(buf)) buf[pos++] = '\n';
-        buf[(pos < sizeof(buf)) ? pos : sizeof(buf)-1] = '\0';
+        snprintf(buf, sizeof(buf), "%s0x%016llX", label, value);
 
         print(ANSI_MAGENTA);
         print(buf);
-        print(ANSI_RESET);
+        print(ANSI_RESET "\n");
     }
 
 } // namespace utils
 } // namespace hanacore
 
-// C ABI wrappers
-extern "C" void log_ok(const char *msg)   { hanacore::utils::log_ok(msg); }
-extern "C" void log_fail(const char *msg) { hanacore::utils::log_fail(msg); }
-extern "C" void log_info(const char *msg) { hanacore::utils::log_info(msg); }
-extern "C" void log_debug(const char *msg){ hanacore::utils::log_debug(msg); }
-extern "C" void log_hex64(const char *label, uint64_t value) { hanacore::utils::log_hex64(label, value); }
+extern "C" {
+    void log_ok(const char *fmt, ...) {
+        va_list args; va_start(args, fmt);
+        hanacore::utils::print_colorv(ANSI_GREEN, "[OK]", fmt, args);
+        va_end(args);
+    }
+    void log_fail(const char *fmt, ...) {
+        va_list args; va_start(args, fmt);
+        hanacore::utils::print_colorv(ANSI_RED, "[FAIL]", fmt, args);
+        va_end(args);
+    }
+    void log_info(const char *fmt, ...) {
+        va_list args; va_start(args, fmt);
+        hanacore::utils::print_colorv(ANSI_CYAN, "[INFO]", fmt, args);
+        va_end(args);
+    }
+    void log_debug(const char *fmt, ...) {
+        va_list args; va_start(args, fmt);
+        hanacore::utils::print_colorv(ANSI_GRAY, "[DEBUG]", fmt, args);
+        va_end(args);
+    }
+    void log_hex64(const char *label, uint64_t value) {
+        hanacore::utils::log_hex64(label, value);
+    }
+}
+
+// v-variants that accept va_list. Useful for safe forwarding from C++ wrappers.
+extern "C" {
+    void log_ok_v(const char *fmt, va_list ap) {
+        hanacore::utils::print_colorv(ANSI_GREEN, "[OK]", fmt, ap);
+    }
+    void log_fail_v(const char *fmt, va_list ap) {
+        hanacore::utils::print_colorv(ANSI_RED, "[FAIL]", fmt, ap);
+    }
+    void log_info_v(const char *fmt, va_list ap) {
+        hanacore::utils::print_colorv(ANSI_CYAN, "[INFO]", fmt, ap);
+    }
+    void log_debug_v(const char *fmt, va_list ap) {
+        hanacore::utils::print_colorv(ANSI_GRAY, "[DEBUG]", fmt, ap);
+    }
+}

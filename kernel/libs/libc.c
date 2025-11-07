@@ -1,3 +1,4 @@
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -164,6 +165,104 @@ char *utoa(unsigned int value, char *buf, size_t buflen) {
     for (int i = 0; i < pos; ++i) buf[i] = tmp[pos-1-i];
     buf[pos] = '\0';
     return buf;
+}
+
+int vsprintf(char *buf, const char *fmt, va_list args) {
+    char *p = buf;
+    while (*fmt) {
+        if (*fmt != '%') {
+            *p++ = *fmt++;
+            continue;
+        }
+        ++fmt;
+        switch (*fmt) {
+            case 's': {
+                const char *s = va_arg(args, const char*);
+                while (*s) *p++ = *s++;
+                break;
+            }
+            case 'd': {
+                int val = va_arg(args, int);
+                char tmp[32];
+                if (val < 0) {
+                    *p++ = '-';
+                    val = -val;
+                }
+                utoa((unsigned int)val, tmp, sizeof(tmp));
+                char *t = tmp;
+                while (*t) *p++ = *t++;
+                break;
+            }
+            case 'u': {
+                unsigned int val = va_arg(args, unsigned int);
+                char tmp[32];
+                utoa(val, tmp, sizeof(tmp));
+                char *t = tmp;
+                while (*t) *p++ = *t++;
+                break;
+            }
+            case 'x': {
+                unsigned int val = va_arg(args, unsigned int);
+                char tmp[32];
+                char hex[] = "0123456789ABCDEF";
+                int i = 0;
+                if (val == 0) tmp[i++] = '0';
+                while (val > 0 && i < (int)sizeof(tmp)-1) {
+                    tmp[i++] = hex[val & 0xF];
+                    val >>= 4;
+                }
+                // reverse
+                for (int j = i-1; j >= 0; --j) *p++ = tmp[j];
+                break;
+            }
+            case 'c': {
+                char c = (char)va_arg(args, int);
+                *p++ = c;
+                break;
+            }
+            case '%':
+                *p++ = '%';
+                break;
+            default:
+                *p++ = '%';
+                *p++ = *fmt;
+                break;
+        }
+        ++fmt;
+    }
+    *p = '\0';
+    return (int)(p - buf);
+}
+
+// sprintf – wrapper na vsprintf
+int sprintf(char *buf, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int r = vsprintf(buf, fmt, args);
+    va_end(args);
+    return r;
+}
+
+// vsnprintf and snprintf implementations (bounded variants)
+int vsnprintf(char *buf, size_t n, const char *fmt, va_list args) {
+    // Use a temporary buffer to format and then copy up to n-1 bytes.
+    char tmp[1024];
+    int r = vsprintf(tmp, fmt, args);
+    if (r < 0) return r;
+    size_t to_copy = (size_t)r;
+    if (n == 0) return (int)to_copy;
+    if (to_copy >= n) to_copy = n - 1;
+    memcpy(buf, tmp, to_copy);
+    buf[to_copy] = '\0';
+    return (int)to_copy;
+}
+
+int snprintf(char *buf, size_t n, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int r = vsnprintf(buf, n, fmt, args);
+    va_end(args);
+    return r;
 }
 
 

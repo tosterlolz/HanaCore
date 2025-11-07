@@ -15,6 +15,7 @@ extern "C" void fat32_mount_all_letter_modules();
 #include "scheduler/scheduler.hpp"
 #include "shell/shell.hpp"
 #include "mem/heap.hpp"
+#include "utils/utils.hpp"
 // Linker script symbols for init/fini arrays
 extern "C" {
     extern void (*__init_array_start)();
@@ -113,10 +114,12 @@ extern "C" void kernel_main() {
     log_ok("Heap initialized.\n");
     keyboard_init();
     log_ok("Keyboard initialized.");
-    log_info("HanaCore Kernel v1.1 Initialized!");
+    log_info("HanaCore Kernel Initialized!");
     log_info("Bootloader: Limine (x86_64)");
     log_info("Welcome to HanaCore - minimalist C++ OS kernel.");
     log_info("System ready.");
+    log_info("Kernel build: %s", hanacore::utils::build_date);
+    log_info("Kernel version: %s", hanacore::utils::version);
     // Try to initialize fat32 rootfs from a module named "rootfs.img"
     // If an embedded rootfs was linked into the kernel, initialize from it first.
     if (module_request.response) {
@@ -127,7 +130,7 @@ extern "C" void kernel_main() {
         } else {
             char tmp[64];
             // simple print of module count
-            nano_log("Limine modules: %u", (unsigned) mresp->module_count);
+            log_info("Limine modules: %u", (unsigned) mresp->module_count);
         }
         for (uint64_t i = 0; i < mresp->module_count; ++i) {
             volatile struct limine_file* mod = mresp->modules[i];
@@ -144,9 +147,15 @@ extern "C" void kernel_main() {
                     uint64_t off = limine_hhdm_request.response->offset;
                     if ((uint64_t)mod_addr < off) mod_virt = (const void*)(off + mod_addr);
                 }
-                // Initialize FAT32 from the in-memory module image
-                hanacore::fs::fat32_init_from_memory(mod_virt, (size_t)mod->size);
-                break;
+                // Initialize FAT32 from the in-memory module image. Only stop
+                // searching if initialization succeeded; otherwise continue and
+                // try other modules (avoid aborting on a single failure).
+                if (hanacore::fs::fat32_init_from_memory(mod_virt, (size_t)mod->size) == 0) {
+                    hanacore::utils::log_info_cpp("[kernel] rootfs module initialized from memory");
+                    break;
+                } else {
+                    hanacore::utils::log_info_cpp("[kernel] failed to init rootfs module, trying next module if any");
+                }
             }
         }
     }
