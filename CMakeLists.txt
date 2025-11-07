@@ -31,6 +31,27 @@ add_custom_target(install_iso ALL
   COMMENT "Populate ${ISO_ROOT_DIR} with boot and rootfs files (kernel and modules copied by their targets)"
 )
 
+# Make sure the rootfs image is created before we populate the ISO so it
+# becomes available as a Limine module inside the ISO.
+add_dependencies(install_iso mkrootfs)
+
+# Copy the generated rootfs image into the ISO staging area if present.
+add_custom_command(TARGET install_iso POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${ISO_ROOT_DIR}/boot
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/rootfs.img ${ISO_ROOT_DIR}/boot/rootfs.img
+  COMMENT "Copy rootfs.img into ISO staging area"
+)
+
+# Target to produce a minimal FAT32 rootfs image used as a Limine module.
+# This creates ${CMAKE_BINARY_DIR}/rootfs.img. The script will attempt to use
+# host tools (fallocate/dd + mkfs.vfat + mtools) to create and populate the image.
+add_custom_target(mkrootfs
+  COMMENT "Create a minimal FAT32 rootfs image for ISO (build/cmake/rootfs.img)"
+  COMMAND ${CMAKE_COMMAND} -E echo "Creating rootfs image in ${CMAKE_BINARY_DIR}/rootfs.img"
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}
+  COMMAND ${CMAKE_COMMAND} -E env bash ${CMAKE_SOURCE_DIR}/tools/mkrootfs.sh ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR}
+)
+
 file(GLOB LIMINE_FILES
   "${CMAKE_SOURCE_DIR}/limine-bootloader/limine-bios.sys"
   "${CMAKE_SOURCE_DIR}/limine-bootloader/limine-bios-cd.bin"

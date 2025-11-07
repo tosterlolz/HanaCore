@@ -8,6 +8,10 @@
 #include "arch/pit.hpp"
 #include "utils/logger.hpp"
 #include "filesystem/fat32.hpp"
+#include <stdint.h>
+
+// C wrapper for auto-mounting letter-encoded modules (defined in fat32.cpp)
+extern "C" void fat32_mount_all_letter_modules();
 #include "scheduler/scheduler.hpp"
 #include "shell/shell.hpp"
 #include "mem/heap.hpp"
@@ -108,10 +112,13 @@ extern "C" void kernel_main() {
     log_info("Bootloader: Limine (x86_64)");
     log_info("Welcome to HanaCore - minimalist C++ OS kernel.");
     log_info("System ready.");
-    // Try to initialize framebuffer for graphics
-
-    // Try to initialize fat33 rootfs from a module named "rootfs.img"
-    hanacore::fs::fat32_init_from_module("rootfs.img");
+    // Try to initialize fat32 rootfs from a module named "rootfs.img"
+    // hanacore::fs::fat32_init_from_module("rootfs.img");
+    // Auto-mount any module whose filename encodes a drive letter
+    // (e.g. c.img -> mounted as C:). This allows users to provide
+    // additional disk images as Limine modules and access them by
+    // drive-letter paths like "C:/path/to/file".
+    fat32_mount_all_letter_modules();
 
     // Try to find a Limine module named "shell.elf" and execute it (ring-0)
     if (module_request.response) {
@@ -119,6 +126,12 @@ extern "C" void kernel_main() {
         for (uint64_t i = 0; i < mresp->module_count; ++i) {
             volatile struct limine_file* mod = mresp->modules[i];
             const char* path = (const char*)(uintptr_t)mod->path;
+            // Convert Limine-provided physical pointers to HHDM virtual addresses
+            // when necessary so string operations are safe.
+            if (path && limine_hhdm_request.response) {
+                uint64_t hoff = limine_hhdm_request.response->offset;
+                if ((uint64_t)path < hoff) path = (const char*)((uintptr_t)path + hoff);
+            }
             if (ends_with(path, "shell.elf") || ends_with(path, "shell.bin")) {
                 log_info("Found external shell module; executing in ring-0");
 
@@ -145,14 +158,14 @@ extern "C" void kernel_main() {
         print("No external shell found — starting built-in shell as task.\n");
 
         // Initialize scheduler (cooperative for now) and create a task for the built-in shell.
-        // log_info("kernel: initializing scheduler");
-        // hanacore::scheduler::init_scheduler();
-        // log_info("kernel: scheduler initialized");
+        log_info("kernel: initializing scheduler");
+        hanacore::scheduler::init_scheduler();
+        log_info("kernel: scheduler initialized");
 
         // Create shell task
-        // int shell_pid = hanacore::scheduler::create_task((void(*)(void))hanacore::shell::shell_main);
-        // log_info("kernel: created shell task");
-        // log_hex64("kernel: shell pid", (uint64_t)shell_pid);
+        int shell_pid = hanacore::scheduler::create_task((void(*)(void))hanacore::shell::shell_main);
+        log_info("kernel: created shell task");
+        log_hex64("kernel: shell pid", (uint64_t)shell_pid);
         hanacore::shell::shell_main();
         // Switch to the newly created task. Cooperative scheduling: tasks must call
         // `sched_yield()` to let other tasks run. We deliberately avoid enabling

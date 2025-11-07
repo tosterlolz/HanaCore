@@ -14,10 +14,5 @@ extern "C" void builtin_ls_cmd(const char* path) {
         print("ls: null path\n");
         return;
     }
-    int r = hanacore::fs::fat32_list_dir(path, ls_cb);
-    if (r < 0) {
-        print("ls: failed to list ");
-        print(path);
-        print("\n");
-    }
+    hanacore::fs::fat32_list_dir(path, ls_cb);
 }

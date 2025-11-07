@@ -37,6 +37,10 @@ int exec_module_by_name(const char* filename) {
     for (uint64_t i = 0; i < resp->module_count; ++i) {
         volatile struct limine_file* mod = resp->modules[i];
         const char* path = (const char*)(uintptr_t)mod->path;
+        if (path && limine_hhdm_request.response) {
+            uint64_t hoff = limine_hhdm_request.response->offset;
+            if ((uint64_t)path < hoff) path = (const char*)((uintptr_t)path + hoff);
+        }
         if (!path) continue;
         // match filename suffix
         size_t pl = 0; while (path[pl]) ++pl;

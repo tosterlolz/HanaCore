@@ -11,6 +11,10 @@ namespace hanacore::utils {
 }
 namespace hanacore { namespace mem {
         
+    // Temporary static heap buffer to avoid relying on bump allocator
+    // during early boot. This ensures the heap memory is already mapped
+    // as part of the kernel image and writable.
+    static uint8_t static_heap[1024 * 1024]; // 1 MiB static fallback
     struct FreeBlock {
         size_t size; // total size of this block including header
         FreeBlock *next;
@@ -26,20 +30,16 @@ namespace hanacore { namespace mem {
 
     void heap_init(size_t size) {
         if (heap_start) return; // already initialized
-        // allocate from bump allocator, page-align
+        // Prefer to use the static fallback heap to avoid early mapping
+        // issues. If you want to source the heap from bump allocator,
+        // replace this assignment with a bump_alloc_alloc call.
         size_t alloc_size = align_up(size, 0x1000);
-        hanacore::utils::log_hex64("heap: request size", (uint64_t)size);
-        hanacore::utils::log_hex64("heap: alloc_size", (uint64_t)alloc_size);
-        void *mem = bump_alloc_alloc(alloc_size, 0x1000);
-        if (!mem) {
-            hanacore::utils::log_fail("heap: bump_alloc_alloc returned NULL");
-            return; // can't do much
-        }
-
+        if (alloc_size > sizeof(static_heap)) alloc_size = sizeof(static_heap);
+        void *mem = static_heap;
         heap_start = mem;
         heap_size = alloc_size;
-        hanacore::utils::log_hex64("heap: start", (uint64_t)heap_start);
-        hanacore::utils::log_hex64("heap: size", (uint64_t)heap_size);
+        hanacore::utils::log_hex64("heap: using static heap start", (uint64_t)heap_start);
+        hanacore::utils::log_hex64("heap: using static heap size", (uint64_t)heap_size);
 
         // single free block spans the whole heap
         free_list = (FreeBlock *)heap_start;
