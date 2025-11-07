@@ -23,16 +23,15 @@ static void ls_cb(const char* name) {
 
 extern "C" void builtin_ls_cmd(const char* path) {
     if (!path) {
-        print("\nls: null path\n");
+        print("ls: null path\n");
         return;
     }
 
-    print("\nListing directory: ");
+    print("Listing directory: ");
     print(path);
-    print("\n");
 
     int rc = hanacore::fs::fat32_list_dir(path, ls_cb);
     if (rc != 0) {
-        print("\nls: failed to list directory (check mount or cluster)\n");
+        print("ls: failed to list directory (check mount or cluster)\n");
     }
 }

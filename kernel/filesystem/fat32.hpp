@@ -24,6 +24,14 @@ namespace hanacore {
         // List mounted filesystems: callback receives a printable line per mount
         void fat32_list_mounts(void (*cb)(const char* line));
 
+    // Write helpers (simplified): create/remove files and directories.
+    // These are minimal, short-name only implementations intended for a
+    // simple rootfs and tools. Return 0 on success, -1 on failure.
+    int fat32_create_file(const char* path);
+    int fat32_unlink(const char* path);
+    int fat32_make_dir(const char* path);
+    int fat32_remove_dir(const char* path);
+
     } // namespace fs
 } // namespace hanacore
 
