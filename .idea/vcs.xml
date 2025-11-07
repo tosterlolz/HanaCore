@@ -3,6 +3,6 @@
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/flanterm" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/limine-bootloader" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/limine" vcs="Git" />
   </component>
 </project>

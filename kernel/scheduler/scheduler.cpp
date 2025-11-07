@@ -130,10 +130,12 @@ void schedule_next() {
     log_hex64("scheduler: next", (uint64_t)next);
     log_hex64("scheduler: next->rsp", (uint64_t)next->rsp);
 
-    // DEBUG: temporarily avoid performing the actual context switch to
-    // check whether the crash is caused by the assembly switch.
-    log_info("scheduler: skipping context_switch (debug)");
-    return;
+    // Perform the context switch: save previous stack pointer and load next.
+    // context_switch is declared at file scope above.
+    log_info("scheduler: performing context switch");
+    context_switch(&prev->rsp, &next->rsp, nullptr, nullptr);
+
+    // When we return here, we've switched back to this task. Update state.
 }
 
 void sched_yield() {

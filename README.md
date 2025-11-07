@@ -9,6 +9,7 @@
 * cmake
 * brain
 
+
 ## how to clone
 
 ```bash
@@ -22,7 +23,7 @@ just build # this build the kernel
 just run # this builds the kernel and runs qemu
 ```
 
-## build your own program of this kernel
+## build your own program for this kernel
 ### example shell code
 ```cpp
 // shell.cpp

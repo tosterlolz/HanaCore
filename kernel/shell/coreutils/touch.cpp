@@ -1,4 +1,4 @@
-#include "../../filesystem/fat32.hpp"
+#include "../../filesystem/hanafs.hpp"
 
 extern "C" void print(const char*);
 
@@ -8,7 +8,7 @@ extern "C" void builtin_touch_cmd(const char* arg) {
         return;
     }
 
-    int rc = hanacore::fs::fat32_create_file(arg);
+    int rc = hanacore::fs::hanafs_create_file(arg);
     if (rc == 0) {
         print("touch: ok\n");
     } else {

@@ -37,4 +37,12 @@ int sprintf(char* buffer, const char* fmt, ...);
 
 #ifdef __cplusplus
 }
+#if defined(__cplusplus)
+namespace hanacore { namespace drivers { namespace screen {
+	// C++ namespace wrappers (same signatures as C API)
+	void clear_screen();
+	void print(const char* str);
+	void print_fmt(const char* fmt, ...);
+} } }
+#endif
 #endif

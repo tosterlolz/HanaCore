@@ -74,100 +74,123 @@ static size_t fb_pitch = 0; // bytes per scanline
 
 // Simple cursor backup (8x8) to restore pixels when moving cursor
 
+namespace hanacore::drivers::screen {
+
 static size_t string_len(const char* s) {
     size_t n = 0; while (s && s[n]) ++n; return n;
 }
 
 void clear_screen() {
-    debug_puts("=== Flanterm Initialization ===\n");
-    if (term) {
-        debug_puts("Already initialised.\n");
+    // If Flanterm is not initialised yet, initialise it and return.
+    if (!term) {
+        debug_puts("=== Flanterm Initialization ===\n");
+
+        volatile struct limine_framebuffer_response* resp = framebuffer_request.response;
+        if (!resp || resp->framebuffer_count == 0) {
+            debug_puts("⚠ No framebuffer response from Limine - Flanterm unavailable.\n");
+            debug_puts("Using debug port only.\n");
+            return;
+        }
+
+        struct limine_framebuffer* fb = resp->framebuffers[0];
+        debug_puts("Framebuffer found - initializing Flanterm...\n");
+
+        // Print diagnostics helpful for debugging mapping/format issues.
+        debug_putln_hex64("limine_response_ptr: ", (uint64_t)(uintptr_t)resp);
+        debug_putln_hex64("framebuffer_ptr:    ", (uint64_t)(uintptr_t)fb);
+        debug_putln_hex64("fb->address:       ", (uint64_t)(uintptr_t)fb->address);
+        debug_putln_hex64("fb->width:         ", (uint64_t)fb->width);
+        debug_putln_hex64("fb->height:        ", (uint64_t)fb->height);
+        debug_putln_hex64("fb->pitch:         ", (uint64_t)fb->pitch);
+
+        if (!limine_hhdm_request.response) {
+            debug_puts("⚠ No HHDM provided by Limine. Avoiding unsafe physical access.\n");
+            debug_puts("Flanterm will not be initialised. Using debug port only.\n");
+            return;
+        }
+
+        uint64_t hhdm_off = limine_hhdm_request.response->offset;
+        uint64_t fb_addr = (uint64_t)(uintptr_t)fb->address;
+
+        // If Limine already returned an HHDM-mapped address, use it directly.
+        uint32_t* fb_virt = nullptr;
+        if (fb_addr >= hhdm_off) {
+            fb_virt = (uint32_t*)fb_addr;
+        } else {
+            fb_virt = (uint32_t*)(hhdm_off + fb_addr);
+        }
+
+        debug_putln_hex64("hhdm_offset:       ", hhdm_off);
+        debug_putln_hex64("fb_virt:           ", (uint64_t)(uintptr_t)fb_virt);
+        debug_putln_hex64("red_mask_size:    ", (uint64_t)fb->red_mask_size);
+        debug_putln_hex64("red_mask_shift:   ", (uint64_t)fb->red_mask_shift);
+        debug_putln_hex64("green_mask_size:  ", (uint64_t)fb->green_mask_size);
+        debug_putln_hex64("green_mask_shift: ", (uint64_t)fb->green_mask_shift);
+        debug_putln_hex64("blue_mask_size:   ", (uint64_t)fb->blue_mask_size);
+        debug_putln_hex64("blue_mask_shift:  ", (uint64_t)fb->blue_mask_shift);
+
+        // Initialise Flanterm. Pass NULL allocators so Flanterm uses its internal
+        // bump allocator (large enough for typical resolutions). Pass NULL font
+        // so Flanterm uses its default font.
+        term = flanterm_fb_init(
+            nullptr, nullptr,
+            (uint32_t*)fb_virt,
+            fb->width, fb->height, fb->pitch,
+            fb->red_mask_size, fb->red_mask_shift,
+            fb->green_mask_size, fb->green_mask_shift,
+            fb->blue_mask_size, fb->blue_mask_shift,
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            nullptr, 0, 0, 0, 0, 0, 0, 0
+        );
+
+        if (term) {
+            debug_puts("✓ Flanterm initialization successful!\n");
+            flanterm_full_refresh(term);
+            log_ok("Flanterm Terminal Ready!");
+            flanterm_flush(term);
+            // cache framebuffer info for simple 32-bit RGB drawing
+            fb_ptr = fb_virt;
+            fb_width = fb->width;
+            fb_height = fb->height;
+            fb_pitch = fb->pitch;
+        } else {
+            debug_puts("✗ Flanterm initialization failed. Using debug port only.\n");
+        }
+
         return;
     }
 
-    volatile struct limine_framebuffer_response* resp = framebuffer_request.response;
-    if (!resp || resp->framebuffer_count == 0) {
-        debug_puts("⚠ No framebuffer response from Limine - Flanterm unavailable.\n");
-        debug_puts("Using debug port only.\n");
-        return;
-    }
-
-    struct limine_framebuffer* fb = resp->framebuffers[0];
-    debug_puts("✓ Framebuffer found - initializing Flanterm...\n");
-
-    // Print diagnostics helpful for debugging mapping/format issues.
-    debug_putln_hex64("limine_response_ptr: ", (uint64_t)(uintptr_t)resp);
-    debug_putln_hex64("framebuffer_ptr:    ", (uint64_t)(uintptr_t)fb);
-    debug_putln_hex64("fb->address:       ", (uint64_t)(uintptr_t)fb->address);
-    debug_putln_hex64("fb->width:         ", (uint64_t)fb->width);
-    debug_putln_hex64("fb->height:        ", (uint64_t)fb->height);
-    debug_putln_hex64("fb->pitch:         ", (uint64_t)fb->pitch);
-
-    if (!limine_hhdm_request.response) {
-        debug_puts("⚠ No HHDM provided by Limine. Avoiding unsafe physical access.\n");
-        debug_puts("Flanterm will not be initialised. Using debug port only.\n");
-        return;
-    }
-
-    uint64_t hhdm_off = limine_hhdm_request.response->offset;
-    uint64_t fb_addr = (uint64_t)(uintptr_t)fb->address;
-
-    // If Limine already returned an HHDM-mapped address, use it directly.
-    uint32_t* fb_virt = nullptr;
-    if (fb_addr >= hhdm_off) {
-        fb_virt = (uint32_t*)fb_addr;
-    } else {
-        fb_virt = (uint32_t*)(hhdm_off + fb_addr);
-    }
-
-    debug_putln_hex64("hhdm_offset:       ", hhdm_off);
-    debug_putln_hex64("fb_virt:           ", (uint64_t)(uintptr_t)fb_virt);
-    debug_putln_hex64("red_mask_size:    ", (uint64_t)fb->red_mask_size);
-    debug_putln_hex64("red_mask_shift:   ", (uint64_t)fb->red_mask_shift);
-    debug_putln_hex64("green_mask_size:  ", (uint64_t)fb->green_mask_size);
-    debug_putln_hex64("green_mask_shift: ", (uint64_t)fb->green_mask_shift);
-    debug_putln_hex64("blue_mask_size:   ", (uint64_t)fb->blue_mask_size);
-    debug_putln_hex64("blue_mask_shift:  ", (uint64_t)fb->blue_mask_shift);
-
-    // Initialise Flanterm. Pass NULL allocators so Flanterm uses its internal
-    // bump allocator (large enough for typical resolutions). Pass NULL font
-    // so Flanterm uses its default font.
-    term = flanterm_fb_init(
-        nullptr, nullptr,
-        (uint32_t*)fb_virt,
-        fb->width, fb->height, fb->pitch,
-        fb->red_mask_size, fb->red_mask_shift,
-        fb->green_mask_size, fb->green_mask_shift,
-        fb->blue_mask_size, fb->blue_mask_shift,
-        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-        nullptr, 0, 0, 0, 0, 0, 0, 0
-    );
-
-    if (term) {
-        debug_puts("✓ Flanterm initialization successful!\n");
-        flanterm_full_refresh(term);
-        log_ok("Flanterm Terminal Ready!");
-        flanterm_flush(term);
-        // cache framebuffer info for simple 32-bit RGB drawing
-        fb_ptr = fb_virt;
-        fb_width = fb->width;
-        fb_height = fb->height;
-        fb_pitch = fb->pitch;
-    } else {
-        debug_puts("✗ Flanterm initialization failed. Using debug port only.\n");
-    }
+    // If Flanterm is already initialised, send ANSI clear and home sequence
+    // so the terminal's internal grid is reset cleanly.
+    const char ansi_clear[] = "\x1b[2J\x1b[H";
+    flanterm_write(term, ansi_clear, sizeof(ansi_clear) - 1);
+    flanterm_full_refresh(term);
+    flanterm_flush(term);
 }
 
+} // namespace hanacore::drivers::screen
 
-void print(const char* str) {
-    if (!str) return;
-    // If GUI mode is active and gui_term exists, route prints there.
-    if (!term) {
-        debug_puts("TERM_NOT_INIT:");
-        debug_puts(str);
-        return;
+// Extern C wrappers that forward to the namespaced implementations so the
+// existing C ABI remains stable.
+extern "C" void clear_screen() {
+    hanacore::drivers::screen::clear_screen();
+}
+
+extern "C" void print(const char* str) {
+    hanacore::drivers::screen::print(str);
+}
+
+// Provide the namespaced print implementation that the extern wrapper calls.
+namespace hanacore::drivers::screen {
+    void print(const char* str) {
+        if (!str) return;
+        if (!term) {
+            debug_puts("TERM_NOT_INIT:");
+            debug_puts(str);
+            return;
+        }
+        flanterm_write(term, str, string_len(str));
     }
-    flanterm_write(term, str, string_len(str));
 }
 
 // Simple pixel write (assumes 32-bit native framebuffer)

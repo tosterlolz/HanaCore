@@ -29,6 +29,17 @@ set(EXTRA_C_SRCS
 
 set(KERNEL_SRCS ${KERNEL_CPP_SRCS} ${KERNEL_C_SRCS} ${KERNEL_ASM_SRCS} ${EXTRA_C_SRCS})
 
+# Exclude networking sources so this build has no networking subsystem.
+# We keep the source files in the repo for history, but stop compiling them
+# and remove related drivers (PCI/virtio) from the kernel target.
+file(GLOB_RECURSE KERNEL_NET_SRCS
+  "${CMAKE_SOURCE_DIR}/kernel/net/*.cpp"
+  "${CMAKE_SOURCE_DIR}/kernel/net/*.c"
+)
+list(REMOVE_ITEM KERNEL_SRCS ${KERNEL_NET_SRCS})
+# Exclude PCI/virtio driver sources that belong to networking
+list(REMOVE_ITEM KERNEL_SRCS "${CMAKE_SOURCE_DIR}/kernel/drivers/pci.cpp" "${CMAKE_SOURCE_DIR}/kernel/drivers/virtio.cpp")
+
 # Exclude certain assembly stubs that have C implementations to avoid duplicate symbols
 list(REMOVE_ITEM KERNEL_SRCS "${CMAKE_SOURCE_DIR}/kernel/arch/gdt_reload.S")
 list(REMOVE_ITEM KERNEL_SRCS "${CMAKE_SOURCE_DIR}/kernel/arch/isr_common.S")

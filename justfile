@@ -7,26 +7,24 @@ cc := prefix + "-gcc"
 @default:
 	just build
 
-# Configure and build the kernel using CMake. This will generate
-# build/cmake and build the 'kernel' target which outputs build/cmake/kernel.elf
 build-kernel:
-	if [ -z "$$CROSS_COMPILE" ]; then export CROSS_COMPILE={{prefix}}-; fi; \
+	# Default to using the native toolchain (gcc/g++) unless CROSS_COMPILE is
+	# explicitly provided. Setting CROSS_COMPILE to empty lets CMake pick the
+	# host compilers.
+	if [ -z "$$CROSS_COMPILE" ]; then export CROSS_COMPILE=; fi; \
 	cmake -S . -B build/cmake || true; \
 	cmake --build build/cmake --target kernel -- -j$(nproc)
 
 # Build optional userland and install files and produce an ISO
-build-image: build-kernel
-	# Configure and build via CMake; be tolerant of optional host tools
-	if [ -z "$$CROSS_COMPILE" ]; then export CROSS_COMPILE={{prefix}}-; fi; \
+build: build-kernel
+	if [ -z "$$CROSS_COMPILE" ]; then export CROSS_COMPILE=; fi; \
 	cmake -S . -B build/cmake || true; \
-	# Build kernel already done by dependency; optionally build rootfs and userland modules
-	cmake --build build/cmake --target mkrootfs || true; \
+	# Build kernel already done by dependency; optionally build userland modules
 	cmake --build build/cmake --target hello_module_install || true; \
 	# Collect kernel and limine files into iso_root
 	cmake --build build/cmake --target install_iso || true; \
-	# Ensure boot dir exists and include generated rootfs if present
+	# Ensure boot dir exists
 	mkdir -p build/cmake/iso_root/boot; \
-	if [ -f build/cmake/rootfs.img ]; then cp build/cmake/rootfs.img build/cmake/iso_root/boot/; fi; \
 	# Create ISO from CMake staging area (xorriso optional)
 	if command -v xorriso >/dev/null 2>&1; then \
 		xorriso -as mkisofs -b boot/limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table build/cmake/iso_root -o build/HanaCore.iso 2>/dev/null || true; \
@@ -37,11 +35,7 @@ build-image: build-kernel
 	else \
 		echo "No ISO tool (xorriso/genisoimage/mkisofs) found; skipping ISO creation"; \
 	fi; \
-	# Install Limine to ISO (best-effort)
-	if [ -f build/HanaCore.iso ]; then limine/limine bios-install build/HanaCore.iso 2>/dev/null || echo "Failed to install Limine (might need xorriso)"; fi
-
-build: build-image
-	if [ -f build/HanaCore.iso ]; then echo "✅ HanaCore ISO built -> build/HanaCore.iso"; else echo "⚠️ ISO not created (missing tool or error). Check build/cmake/iso_root"; fi
+	echo "🌸 Built HanaCore ISO at build/HanaCore.iso"
 
 run: build
 	@echo "🌸 Starting HanaCore in QEMU..."

@@ -1,8 +1,8 @@
-#include "../../filesystem/fat32.hpp"
+#include "../../filesystem/hanafs.hpp"
 #include <stddef.h>
 
 extern "C" void print(const char*);
-extern "C" void fat32_progress_update(int percent); // weak symbol provided by fat32
+// HanaFS doesn't provide the FAT32 progress hook; keep listing simple.
 
 // Callback for fat32_list_dir
 static void ls_cb(const char* name) {
@@ -31,7 +31,7 @@ extern "C" void builtin_ls_cmd(const char* path) {
     print(path);
     print("\n");
 
-    int rc = hanacore::fs::fat32_list_dir(path, ls_cb);
+    int rc = hanacore::fs::hanafs_list_dir(path, ls_cb);
     if (rc != 0) {
         print("ls: failed to list directory (check mount or cluster)\n");
     }

@@ -8,14 +8,11 @@
 #include "arch/pit.hpp"
 #include "utils/logger.hpp"
 #include "filesystem/fat32.hpp"
-#include "net/e1000.hpp"
-#include "net/netif.hpp"
+#include "filesystem/hanafs.hpp"
 #include <stdint.h>
 
-extern "C" void net_loopback_init();
 // C wrapper for auto-mounting letter-encoded modules (defined in fat32.cpp)
 extern "C" void fat32_mount_all_letter_modules();
-extern "C" void virtio_net_init();
 #include "scheduler/scheduler.hpp"
 #include "shell/shell.hpp"
 #include "mem/heap.hpp"
@@ -164,18 +161,11 @@ extern "C" void kernel_main() {
         }
     }
 
-    // Auto-mount any module whose filename encodes a drive letter
-    // (e.g. c.img -> mounted as C:). This allows users to provide
-    // additional disk images as Limine modules and access them by
-    // drive-letter paths like "C:/path/to/file".
-    hanacore::fs::fat32_mount_all_letter_modules();
+    // Initialize HanaFS
+    hanacore::fs::hanafs_init();
+    log_info("[kernel] HanaFS initialized.");
 
-    // Initialize networking: loopback first, then attempt hardware probe.
-    net_loopback_init();
-    e1000_init();
-    // Probe for virtio-net devices (if running under virtio-capable hypervisor)
-    void virtio_net_init();
-    virtio_net_init();
+    // Networking disabled in this build (net subsystem removed).
 
     // Try to find a Limine module named "shell.elf" and execute it (ring-0)
     if (module_request.response) {
