@@ -1,7 +1,9 @@
 [submodule "limine"]
-	path = limine
-	url = https://github.com/limine-bootloader/limine.git
-	branch = v10.x
+    path = limine
+    url = https://github.com/limine-bootloader/limine.git
+    branch = v10.x-binary
+
 [submodule "flanterm"]
-	path = flanterm
-	url = https://codeberg.org/Mintsuki/Flanterm.git
+    path = flanterm
+    url = https://codeberg.org/Mintsuki/Flanterm.git
+    branch = master
