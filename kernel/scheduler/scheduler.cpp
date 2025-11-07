@@ -31,17 +31,17 @@ void init_scheduler() {
     main->pid = next_pid++;
     main->state = TASK_RUNNING;
     main->next = main;
-    hanacore::utils::log_info_cpp("scheduler: main task allocated");
+    hanacore::utils::log_debug_cpp("scheduler: main task allocated");
     // Save current stack
     uint64_t *rsp_val;
     __asm__ volatile ("mov %%rsp, %0" : "=r"(rsp_val));
     main->rsp = rsp_val;
-    hanacore::utils::log_info_cpp("scheduler: main rsp saved");
+    hanacore::utils::log_debug_cpp("scheduler: main rsp saved");
     // Allocate and clear fx state region (16B aligned)
     main->fx_state = bump_alloc_alloc(FX_STATE_SIZE, 16);
     if (!main->fx_state) for (;;) asm volatile("cli; hlt");
     memset(main->fx_state, 0, FX_STATE_SIZE);
-    hanacore::utils::log_info_cpp("scheduler: main fx_state allocated");
+    hanacore::utils::log_debug_cpp("scheduler: main fx_state allocated");
     int cpu = get_cpu_id();
     per_cpu_task_list[cpu] = main;
     per_cpu_current[cpu] = main;
