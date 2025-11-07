@@ -1,5 +1,8 @@
 #include "heap.hpp"
 #include "bump_alloc.hpp"
+#include "pma.hpp"
+#include "vmm.hpp"
+#include "../utils/logger.hpp"
 #include <stdint.h>
 
 // Very small, single-threaded free-list heap for kernel use.
@@ -10,7 +13,6 @@ namespace hanacore::utils {
     extern void log_fail(const char *msg);
 }
 namespace hanacore { namespace mem {
-        
     // Temporary static heap buffer to avoid relying on bump allocator
     // during early boot. This ensures the heap memory is already mapped
     // as part of the kernel image and writable.
@@ -28,11 +30,43 @@ namespace hanacore { namespace mem {
         return (v + (a - 1)) & ~(a - 1);
     }
 
+    // Grow the heap by allocating `pages` pages from PMA and (optionally)
+    // mapping them with VMM. Current PMA returns a virtual pointer (bump-backed),
+    // and VMM mapping is a no-op; we still call vmm_map_range to keep the
+    // contract consistent for later replacement with a real mapper.
+    static bool heap_grow_pages(size_t pages) {
+        if (pages == 0) return false;
+        void *blk = pma_alloc_pages(pages);
+        if (!blk) {
+            hanacore::utils::log_fail_cpp("heap: pma_alloc_pages failed");
+            return false;
+        }
+        size_t grow_size = pages * 0x1000;
+        // Call vmm_map_range for the mapping contract. For now this is a noop
+        // but when vmm_map_range is implemented this will ensure the physical
+        // memory is mapped into the chosen virtual address.
+        int r = vmm_map_range(blk, blk, grow_size, 0);
+        if (r != 0) {
+            hanacore::utils::log_fail_cpp("heap: vmm_map_range failed: %d", r);
+            // We won't free the pages (pma_free_pages is noop for bump),
+            // but mark this as a failure so caller can abort.
+            return false;
+        }
+
+        // Prepend new block to free list
+        FreeBlock *newblk = (FreeBlock *)blk;
+        newblk->size = grow_size;
+        // Keep existing free_list linkage
+        newblk->next = free_list;
+        free_list = newblk;
+        heap_size += grow_size;
+        hanacore::utils::log_hex64_cpp("heap: grew, new block", (uint64_t)(uintptr_t)newblk);
+        hanacore::utils::log_hex64_cpp("heap: grew, size", (uint64_t)grow_size);
+        return true;
+    }
+
     void heap_init(size_t size) {
         if (heap_start) return; // already initialized
-        // Prefer to use the static fallback heap to avoid early mapping
-        // issues. If you want to source the heap from bump allocator,
-        // replace this assignment with a bump_alloc_alloc call.
         size_t alloc_size = align_up(size, 0x1000);
         if (alloc_size > sizeof(static_heap)) alloc_size = sizeof(static_heap);
         void *mem = static_heap;
@@ -56,31 +90,50 @@ namespace hanacore { namespace mem {
         const size_t header = align_up(sizeof(FreeBlock), align);
         size_t total = payload + header;
 
-        FreeBlock *prev = nullptr;
-        FreeBlock *cur = free_list;
+        // Try up to one grow attempt if allocation fails.
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            FreeBlock *prev = nullptr;
+            FreeBlock *cur = free_list;
 
-        while (cur) {
-            if (cur->size >= total) {
-                // found a block
-                if (cur->size >= total + (header + 16)) {
-                    // split
-                    FreeBlock *next = (FreeBlock *)((uint8_t *)cur + total);
-                    next->size = cur->size - total;
-                    next->next = cur->next;
-                    cur->size = total;
-                    if (prev) prev->next = next; else free_list = next;
-                } else {
-                    // use entire block
-                    if (prev) prev->next = cur->next; else free_list = cur->next;
+            while (cur) {
+                if (cur->size >= total) {
+                    // found a block
+                    if (cur->size >= total + (header + 16)) {
+                        // split
+                        FreeBlock *next = (FreeBlock *)((uint8_t *)cur + total);
+                        next->size = cur->size - total;
+                        next->next = cur->next;
+                        cur->size = total;
+                        if (prev) prev->next = next; else free_list = next;
+                    } else {
+                        // use entire block
+                        if (prev) prev->next = cur->next; else free_list = cur->next;
+                    }
+                    // return payload pointer after header
+                    void *payload_ptr = (void *)((uint8_t *)cur + header);
+                    return payload_ptr;
                 }
-                // return payload pointer after header
-                void *payload_ptr = (void *)((uint8_t *)cur + header);
-                return payload_ptr;
+                prev = cur;
+                cur = cur->next;
             }
-            prev = cur;
-            cur = cur->next;
+
+            // no block found: try to grow heap once on first attempt
+            if (attempt == 0) {
+                size_t pages_needed = align_up(total, 0x1000) / 0x1000;
+                if (pages_needed == 0) pages_needed = 1;
+                // try to grow by at least pages_needed, but prefer a small batch to
+                // reduce PMA calls (grow by pages_needed or 4 pages whichever is larger)
+                size_t grow_pages = pages_needed;
+                if (grow_pages < 4) grow_pages = 4;
+                bool grew = heap_grow_pages(grow_pages);
+                if (!grew) return nullptr;
+                // on success, loop and try allocation again
+                continue;
+            }
+            // second attempt failed as well
+            return nullptr;
         }
-        return nullptr; // out of memory
+        return nullptr; // unreachable, but keep signature
     }
 
     void kfree(void *ptr) {

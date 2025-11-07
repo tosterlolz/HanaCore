@@ -8,10 +8,14 @@
 #include "arch/pit.hpp"
 #include "utils/logger.hpp"
 #include "filesystem/fat32.hpp"
+#include "net/e1000.hpp"
+#include "net/netif.hpp"
 #include <stdint.h>
 
+extern "C" void net_loopback_init();
 // C wrapper for auto-mounting letter-encoded modules (defined in fat32.cpp)
 extern "C" void fat32_mount_all_letter_modules();
+extern "C" void virtio_net_init();
 #include "scheduler/scheduler.hpp"
 #include "shell/shell.hpp"
 #include "mem/heap.hpp"
@@ -165,6 +169,13 @@ extern "C" void kernel_main() {
     // additional disk images as Limine modules and access them by
     // drive-letter paths like "C:/path/to/file".
     hanacore::fs::fat32_mount_all_letter_modules();
+
+    // Initialize networking: loopback first, then attempt hardware probe.
+    net_loopback_init();
+    e1000_init();
+    // Probe for virtio-net devices (if running under virtio-capable hypervisor)
+    void virtio_net_init();
+    virtio_net_init();
 
     // Try to find a Limine module named "shell.elf" and execute it (ring-0)
     if (module_request.response) {

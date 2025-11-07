@@ -94,6 +94,8 @@ static uint32_t root_dir_cluster;
 // Which virtual drive number is mounted for the current FAT32 instance.
 // -1 = none, 0 = ATA master, 1 = module/rootfs. Updated when init functions succeed.
 static int mounted_drive = -1;
+// If a module backed filesystem was mounted, record the module path (if known)
+static char mounted_module_name[160] = "";
 
 // =================== Helpers ===================
 
@@ -688,6 +690,8 @@ int fat32_init_from_memory(const void* data, size_t size) {
     hanacore::utils::log_ok_cpp("[FAT32] Initialized from memory module");
     // Mark that this filesystem came from a module and should be exposed as drive 1:/
     mounted_drive = 1;
+    // default name when caller doesn't supply a path
+    npf_snprintf(mounted_module_name, sizeof(mounted_module_name), "<memory>");
     return 0;
 }
 
@@ -749,7 +753,10 @@ int fat32_list_dir(const char* path, void (*cb)(const char* name)) {
                     if (fat32_init_from_memory(mod_virt, (size_t)mod->size) == 0) {
                         mounted_drive = 1;
                         hanacore::utils::log_ok_cpp("[FAT32] Mounted module image for drive 1:");
-                        if (mpath) hanacore::utils::log_ok_cpp(mpath);
+                        if (mpath) {
+                            hanacore::utils::log_ok_cpp(mpath);
+                            npf_snprintf(mounted_module_name, sizeof(mounted_module_name), "%s", mpath);
+                        }
                         break;
                     }
                 }
@@ -1208,6 +1215,8 @@ void fat32_mount_all_letter_modules() {
                 if (fat32_init_from_memory(mod_virt, (size_t)mod->size) == 0) {
                     hanacore::utils::log_ok_cpp("[FAT32] Mounted from module:");
                     hanacore::utils::log_ok_cpp(path);
+                    // remember which module was used for reporting
+                    npf_snprintf(mounted_module_name, sizeof(mounted_module_name), "%s", path);
                     fat32_list_mounts([](const char* line) { hanacore::utils::log_info_cpp(line); });
                     return;
                 } else {
@@ -1233,14 +1242,36 @@ void fat32_mount_all_letter_modules() {
 void fat32_list_mounts(void (*cb)(const char* line)) {
     if (!cb) return;
     char buf[64];
+    // Provide richer mount information: which drive is mounted and any
+    // module paths exposed by Limine modules so `lsblk` can show them.
     if (mounted_drive == 1) {
-        npf_snprintf(buf, sizeof(buf), "FAT32 mount: [1: rootfs]");
+        if (mounted_module_name[0]) npf_snprintf(buf, sizeof(buf), "FAT32 mount: [1: module -> %s]", mounted_module_name);
+        else npf_snprintf(buf, sizeof(buf), "FAT32 mount: [1: rootfs]");
+        cb(buf);
     } else if (mounted_drive == 0) {
         npf_snprintf(buf, sizeof(buf), "FAT32 mount: [0: ATA master]");
+        cb(buf);
     } else {
         npf_snprintf(buf, sizeof(buf), "FAT32 mount: [no mount]");
+        cb(buf);
     }
-    cb(buf);
+
+    // Additionally list any Limine modules (so users can see available ISO images).
+    if (module_request.response) {
+        volatile struct limine_module_response* resp = module_request.response;
+        for (uint64_t i = 0; i < resp->module_count; ++i) {
+            volatile struct limine_file* mod = resp->modules[i];
+            const char* path = (const char*)(uintptr_t)mod->path;
+            if (path && limine_hhdm_request.response) {
+                uint64_t hoff = limine_hhdm_request.response->offset;
+                if ((uint64_t)path < hoff) path = (const char*)((uintptr_t)path + hoff);
+            }
+            char mline[192];
+            if (path) npf_snprintf(mline, sizeof(mline), "module[%u]: %s (%u bytes)", (unsigned)i, path, (unsigned)mod->size);
+            else npf_snprintf(mline, sizeof(mline), "module[%u]: <unnamed> (%u bytes)", (unsigned)i, (unsigned)mod->size);
+            cb(mline);
+        }
+    }
 }
 
 } // namespace fs

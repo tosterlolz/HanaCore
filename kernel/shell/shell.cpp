@@ -18,6 +18,7 @@ extern "C" {
     void builtin_rmdir_cmd(const char* arg);
     void builtin_touch_cmd(const char* arg);
     void builtin_rm_cmd(const char* arg);
+    void builtin_fetch_cmd(const char* arg);
 }
 
 static char cwd[256] = "/";
@@ -141,9 +142,28 @@ continue_main_loop:
                     if (strcmp(cmd, "rmdir") == 0) { builtin_rmdir_cmd(arg); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "touch") == 0) { builtin_touch_cmd(arg); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "rm") == 0) { builtin_rm_cmd(arg); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "fetch") == 0) { builtin_fetch_cmd(arg); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "pwd") == 0) { char path[260]; path[0]=current_drive; path[1]=':'; strncpy(&path[2], cwd, sizeof(path)-3); path[sizeof(path)-1]='\0'; print(path); print("\n"); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "clear") == 0) { clear_screen(); pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "echo") == 0) { if(arg && *arg) print(arg); print("\n"); pos=0; print_prompt(); continue; }
+            		if (strcmp(cmd, "echo") == 0) { if(arg && *arg) print(arg); print("\n"); pos=0; print_prompt(); continue; }
+					if (strcmp(cmd, "help") == 0) {
+						print("HanaShell built-in commands:\n");
+						print("  cd <path>        Change directory\n");
+						print("  ls [path]       List directory contents\n");
+						print("  lsblk           List block devices\n");
+						print("  format <dev>    Format device (e.g., 0:)\n");
+						print("  install <src>   Install OS from FAT32 path\n");
+						print("  mkdir <path>    Create directory\n");
+						print("  rmdir <path>    Remove directory\n");
+						print("  touch <file>    Create empty file\n");
+						print("  rm <file>       Remove file\n");
+						print("  fetch <url> -o <path>   Fetch file from URL to FAT32 path\n");
+						print("  pwd             Print working directory\n");
+						print("  clear           Clear the screen\n");
+						print("  echo <text>     Print text to console\n");
+						print("  help            Show this help message\n"); pos=0; print_prompt(); continue;
+					}
+
 
                     // Execute /bin/<cmd>
                     char fullpath[256];
