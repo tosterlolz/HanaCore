@@ -55,7 +55,6 @@ extern "C" void idt_install() {
     iptr.base = (uint64_t)&idt;
     asm volatile ("lidt %0" : : "m" (iptr));
     // Log success
-    print("[OK] IDT installed\n");
 }
 
 // Namespaced C++ wrappers

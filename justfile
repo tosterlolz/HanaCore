@@ -38,7 +38,7 @@ build-image: build-kernel
 		echo "No ISO tool (xorriso/genisoimage/mkisofs) found; skipping ISO creation"; \
 	fi; \
 	# Install Limine to ISO (best-effort)
-	if [ -f build/HanaCore.iso ]; then limine-bootloader/limine bios-install build/HanaCore.iso 2>/dev/null || echo "Failed to install Limine (might need xorriso)"; fi
+	if [ -f build/HanaCore.iso ]; then limine/limine bios-install build/HanaCore.iso 2>/dev/null || echo "Failed to install Limine (might need xorriso)"; fi
 
 build: build-image
 	if [ -f build/HanaCore.iso ]; then echo "✅ HanaCore ISO built -> build/HanaCore.iso"; else echo "⚠️ ISO not created (missing tool or error). Check build/cmake/iso_root"; fi

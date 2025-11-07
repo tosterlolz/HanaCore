@@ -35,6 +35,38 @@ list(REMOVE_ITEM KERNEL_SRCS "${CMAKE_SOURCE_DIR}/kernel/arch/isr_common.S")
 
 add_executable(kernel ${KERNEL_SRCS})
 
+# Ensure rootfs image is available and produce an object from it to embed in the kernel.
+if(DEFINED ENV{CROSS_COMPILE} AND NOT CMAKE_OBJCOPY)
+  set(_cross_prefix $ENV{CROSS_COMPILE})
+  if(NOT _cross_prefix STREQUAL "")
+    set(CMAKE_OBJCOPY "${_cross_prefix}objcopy")
+  endif()
+endif()
+if(NOT DEFINED CMAKE_OBJCOPY)
+  find_program(CMAKE_OBJCOPY NAMES objcopy x86_64-elf-objcopy)
+endif()
+
+set(ROOTFS_C ${CMAKE_BINARY_DIR}/rootfs_embedded.c)
+find_program(XXD xxd)
+if(NOT XXD)
+  message(WARNING "xxd not found; embedding rootfs will be skipped unless objcopy is available")
+endif()
+
+add_custom_command(
+  OUTPUT ${ROOTFS_C}
+  COMMAND ${CMAKE_COMMAND} -E echo "Generating C array for embedded rootfs (if present)"
+  COMMAND ${XXD} -i ${CMAKE_BINARY_DIR}/rootfs.img > ${ROOTFS_C}
+  DEPENDS ${CMAKE_BINARY_DIR}/rootfs.img
+  COMMENT "xxd: creating rootfs_embedded.c"
+  VERBATIM
+)
+
+# Ensure mkrootfs runs before kernel linking so the embedded C can be created
+add_dependencies(kernel mkrootfs)
+
+# Add generated C to kernel sources (will be created during build)
+target_sources(kernel PRIVATE ${ROOTFS_C})
+
 # Place output at top-level build directory and name it kernel.elf
 set_target_properties(kernel PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}

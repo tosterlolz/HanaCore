@@ -1,6 +1,7 @@
 #include "shell.hpp"
 #include "../filesystem/fat32.hpp"
 #include "../userland/elf_loader.hpp"
+#include "../drivers/screen.hpp"
 #include <stddef.h>
 
 // Use C linkage to match kernel symbols
@@ -18,11 +19,12 @@ extern "C" {
 static char cwd[256] = "/";
 // Current drive letter for the shell prompt and relative-path resolution.
 // Uppercase ASCII 'A'..'Z'. Default to 'C'.
-static char current_drive = 'C';
+static char current_drive = '0';
+
+// GUI mode flag shared so print_prompt can target GUI too
+static bool gui_mode = false;
 
 static void print_prompt() {
-	print("user@hanacore:");
-	// Print drive prefix, e.g. "C:/path"
 	char d[3] = { current_drive, ':', '\0' };
 	print(d);
 	print(cwd);
@@ -38,14 +40,11 @@ namespace hanacore {
 			size_t pos = 0;
 			print("Welcome to HanaShell!\n");
 			print_prompt();
+	        // GUI/mouse inactive until user runs `gui`
+	        static bool gui_mode = false;
 
 			while (1) {
 				char c = keyboard_poll_char();
-				if (!c) {
-					// no input, yield a tiny pause
-					__asm__ volatile ("pause");
-					continue;
-				}
 
 				// Handle backspace (0x08) and DEL (0x7f)
 				if (c == '\b' || c == 0x7f) {
@@ -73,7 +72,6 @@ namespace hanacore {
 						print_prompt();
 						continue;
 					}
-
 					// Null-terminate the command
 					buf[pos] = '\0';
 					// Handle simple builtin: cd

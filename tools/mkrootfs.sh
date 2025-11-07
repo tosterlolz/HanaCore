@@ -1,80 +1,64 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# args: <build_dir> <source_dir>
+# Usage: ./mkrootfs.sh <build_dir> <source_dir>
 BUILD_DIR="$1"
 SRC_DIR="$2"
 IMG="$BUILD_DIR/rootfs.img"
-SIZE_MB=8
+SIZE_MB=4
 TMPDIR="$(mktemp -d)"
+
+cleanup() {
+    if mountpoint -q "$TMPDIR/mnt" 2>/dev/null; then
+        echo "mkrootfs: unmounting $TMPDIR/mnt"
+        sudo umount "$TMPDIR/mnt" || true
+    fi
+    rm -rf "$TMPDIR"
+}
+trap cleanup EXIT
 
 echo "mkrootfs: build dir=${BUILD_DIR}, src=${SRC_DIR}, img=${IMG}"
 
-# create blank image
+mkdir -p "$BUILD_DIR"
+
+# -------- Allocate blank image --------
 if command -v fallocate >/dev/null 2>&1; then
     echo "mkrootfs: allocating ${SIZE_MB}MiB image with fallocate"
-    fallocate -l ${SIZE_MB}M "$IMG"
+    fallocate -l "${SIZE_MB}M" "$IMG"
 else
     echo "mkrootfs: fallocate not found, using dd"
     dd if=/dev/zero of="$IMG" bs=1M count=${SIZE_MB} status=none
 fi
 
-# format as FAT32
+# -------- Format as FAT32 --------
 if command -v mkfs.vfat >/dev/null 2>&1; then
     echo "mkrootfs: formatting image as FAT32 (mkfs.vfat)"
-    mkfs.vfat -F 32 "$IMG"
+    mkfs.vfat -F 32 "$IMG" >/dev/null
 elif command -v mkdosfs >/dev/null 2>&1; then
     echo "mkrootfs: formatting image as FAT32 (mkdosfs)"
-    mkdosfs -F 32 "$IMG"
+    mkdosfs -F 32 "$IMG" >/dev/null
 else
-    echo "mkrootfs: mkfs.vfat/mkdosfs not found — image will not be a valid FAT filesystem"
-    echo "mkrootfs: please install dosfstools or provide a prebuilt rootfs.img"
-    exit 0
+    echo "mkrootfs: mkfs.vfat/mkdosfs not found — please install dosfstools"
+    exit 1
 fi
 
-# Populate image: prefer mtools (no root required)
-if command -v mcopy >/dev/null 2>&1 && command -v mmd >/dev/null 2>&1; then
-    echo "mkrootfs: using mtools (mcopy/mmd) to populate image"
-    # create /boot inside image (do not pre-create /bin to avoid mtools prompting)
-    mmd -i "$IMG" ::/boot || true
-    MTOOLS_MCOPY_FLAGS="-n" # do not overwrite existing files (non-interactive)
-    # if a rootfs_src dir exists, copy its contents; otherwise create README
-        if [ -d "$SRC_DIR/rootfs_src" ]; then
-        echo "mkrootfs: copying files from ${SRC_DIR}/rootfs_src into image"
-        # copy all files and dirs under rootfs_src to image root
-        (cd "$SRC_DIR/rootfs_src" && find . -type d -print0 | while IFS= read -r -d '' d; do
-            # create directories in image
-            [[ "$d" == "." ]] && continue
-            mmd -i "$IMG" ::"/$d" || true
-        done)
-        (cd "$SRC_DIR/rootfs_src" && find . -type f -print0 | while IFS= read -r -d '' f; do
-            # copy file preserving relative path
-            parentdir=$(dirname "$f")
-            if [ "$parentdir" != "." ]; then
-                mmd -i "$IMG" ::"/$parentdir" || true
-            fi
-            # use -n to avoid interactive overwrite prompts
-            mcopy -i "$IMG" $MTOOLS_MCOPY_FLAGS "$f" ::"/$f" || true
-        done)
-    else
-        echo "mkrootfs: no rootfs_src found; creating README"
-        echo "HanaCore rootfs image" > "$TMPDIR/README.txt"
-        mcopy -i "$IMG" $MTOOLS_MCOPY_FLAGS "$TMPDIR/README.txt" ::/README.txt || true
-    fi
-
-else
-    # fallback: try to mount image (requires sudo/loop support)
-    echo "mkrootfs: mtools not found. Trying to mount image (requires sudo)."
+# -------- Copy files into image --------
+USE_MTOOLS_FALLBACK=0
+if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    echo "mkrootfs: using sudo loop-mount to populate image (non-interactive)"
     MNT="${TMPDIR}/mnt"
     mkdir -p "$MNT"
-    if sudo mount -o loop "$IMG" "$MNT"; then
-        echo "mkrootfs: mounted image to $MNT"
-        # ensure /bin exists
-        sudo mkdir -p "$MNT/bin"
+    if sudo mount -o loop "$IMG" "$MNT" 2>/dev/null; then
+        echo "mkrootfs: mounted image at $MNT"
+        sudo mkdir -p "$MNT"
         if [ -d "$SRC_DIR/rootfs_src" ]; then
-            echo "mkrootfs: copying files from ${SRC_DIR}/rootfs_src"
-            # copy files, avoid clobbering existing files
-            sudo cp -a "$SRC_DIR/rootfs_src/." "$MNT/" || true
+            echo "mkrootfs: copying files from ${SRC_DIR}/rootfs_src/"
+            # Try to copy preserving attributes; if preserving ownership fails
+            # (non-root filesystem), fall back to copying without preserving owner.
+            if ! sudo cp -a "$SRC_DIR/rootfs_src/." "$MNT/" 2>/dev/null; then
+                echo "mkrootfs: cp -a failed (owner preserve) — retrying without ownership preservation"
+                sudo cp -a --no-preserve=ownership "$SRC_DIR/rootfs_src/." "$MNT/" || true
+            fi
         else
             echo "mkrootfs: no rootfs_src found; creating README"
             echo "HanaCore rootfs image" | sudo tee "$MNT/README.txt" >/dev/null
@@ -82,11 +66,44 @@ else
         sync
         sudo umount "$MNT"
     else
-        echo "mkrootfs: failed to mount image. Install mtools or run mkrootfs manually."
-        exit 0
+        echo "mkrootfs: failed to mount with sudo; switching to mtools fallback"
+        USE_MTOOLS_FALLBACK=1
+    fi
+else
+    echo "mkrootfs: no sudo access, using mtools fallback"
+    USE_MTOOLS_FALLBACK=1
+fi
+
+# -------- MTOOLS fallback (no root needed) --------
+if [ "$USE_MTOOLS_FALLBACK" -eq 1 ]; then
+    if command -v mcopy >/dev/null 2>&1 && command -v mmd >/dev/null 2>&1; then
+        echo "mkrootfs: using mtools (mcopy/mmd)"
+        export MTOOLS_SKIP_CHECK=1
+        mmd -i "$IMG" ::/ || true
+        if [ -d "$SRC_DIR/rootfs_src" ]; then
+            echo "mkrootfs: copying files from ${SRC_DIR}/rootfs_src/"
+            (cd "$SRC_DIR/rootfs_src" && \
+                find . -type d -print0 | while IFS= read -r -d '' d; do
+                    [[ "$d" == "." ]] && continue
+                    mmd -i "$IMG" ::"/$d" || true
+                done)
+            (cd "$SRC_DIR/rootfs_src" && \
+                find . -type f -print0 | while IFS= read -r -d '' f; do
+                    parentdir=$(dirname "$f")
+                    if [ "$parentdir" != "." ]; then
+                        mmd -i "$IMG" ::"/$parentdir" || true
+                    fi
+                    mcopy -n -D A -i "$IMG" "$f" ::"/$f" || true
+                done)
+        else
+            echo "mkrootfs: no rootfs_src found; creating README"
+            echo "HanaCore rootfs image" > "$TMPDIR/README.txt"
+            mcopy -i "$IMG" "$TMPDIR/README.txt" ::/README.txt
+        fi
+    else
+        echo "mkrootfs: mtools not available; cannot populate image"
+        exit 1
     fi
 fi
 
-rm -rf "$TMPDIR"
-
-echo "mkrootfs: created $IMG"
+echo "mkrootfs: created ${IMG} successfully (${SIZE_MB}MiB FAT32)"

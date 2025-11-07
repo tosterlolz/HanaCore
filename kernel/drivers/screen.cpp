@@ -2,6 +2,7 @@
 #include "screen.hpp"
 #include "../../boot/limine.h"
 #include "../utils/logger.hpp"
+#include "../mem/heap.hpp"
 
 extern "C" {
 #include "../../flanterm/src/flanterm.h"
@@ -54,6 +55,18 @@ static void debug_putln_hex64(const char *label, uint64_t v) {
 }
 
 static struct flanterm_context* term = nullptr;
+// When GUI mode is active, route print() into gui_term and avoid writing to
+// the main console. Set via screen_set_gui_mode().
+// malloc/free wrappers for flanterm when creating an additional context
+static void *ft_malloc(size_t s) { return hanacore::mem::kmalloc(s); }
+static void ft_free(void *p, size_t s) { (void)s; hanacore::mem::kfree(p); }
+// Framebuffer raw pointer and geometry cached for simple drawing operations
+static uint32_t* fb_ptr = nullptr;
+static size_t fb_width = 0;
+static size_t fb_height = 0;
+static size_t fb_pitch = 0; // bytes per scanline
+
+// Simple cursor backup (8x8) to restore pixels when moving cursor
 
 static size_t string_len(const char* s) {
     size_t n = 0; while (s && s[n]) ++n; return n;
@@ -129,6 +142,11 @@ void clear_screen() {
         flanterm_full_refresh(term);
         log_ok("Flanterm Terminal Ready!");
         flanterm_flush(term);
+        // cache framebuffer info for simple 32-bit RGB drawing
+        fb_ptr = fb_virt;
+        fb_width = fb->width;
+        fb_height = fb->height;
+        fb_pitch = fb->pitch;
     } else {
         debug_puts("✗ Flanterm initialization failed. Using debug port only.\n");
     }
@@ -137,10 +155,30 @@ void clear_screen() {
 
 void print(const char* str) {
     if (!str) return;
+    // If GUI mode is active and gui_term exists, route prints there.
     if (!term) {
         debug_puts("TERM_NOT_INIT:");
         debug_puts(str);
         return;
     }
     flanterm_write(term, str, string_len(str));
+}
+
+// Simple pixel write (assumes 32-bit native framebuffer)
+static inline void put_pixel(int x, int y, uint32_t color) {
+    if (!fb_ptr) return;
+    if (x < 0 || y < 0 || (size_t)x >= fb_width || (size_t)y >= fb_height) return;
+    uint32_t* line = (uint32_t*)((uint8_t*)fb_ptr + y * fb_pitch);
+    line[x] = color;
+}
+
+void screen_fill_rect(int x, int y, int w, int h, uint32_t color) {
+    for (int yy = 0; yy < h; ++yy) {
+        for (int xx = 0; xx < w; ++xx) put_pixel(x + xx, y + yy, color);
+    }
+}
+
+void screen_draw_rect(int x, int y, int w, int h, uint32_t color) {
+    for (int xx = 0; xx < w; ++xx) { put_pixel(x + xx, y, color); put_pixel(x + xx, y + h - 1, color); }
+    for (int yy = 0; yy < h; ++yy) { put_pixel(x, y + yy, color); put_pixel(x + w - 1, y + yy, color); }
 }

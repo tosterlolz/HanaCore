@@ -10,6 +10,8 @@ namespace hanacore {
         // freestanding-friendly.
 
         int fat32_init_from_module(const char* module_name);
+    // Initialize FAT32 state from an in-memory disk image (e.g. Limine module)
+    int fat32_init_from_memory(const void* data, size_t size);
         int64_t fat32_read_file(const char* path, void* buf, size_t len);
         void* fat32_get_file_alloc(const char* path, size_t* out_len);
         int fat32_list_dir(const char* path, void (*cb)(const char* name));
@@ -20,3 +22,11 @@ namespace hanacore {
 
     } // namespace fs
 } // namespace hanacore
+
+// C wrappers (also declared here for callers in C files)
+extern "C" {
+// Mount helpers exposed to C callers. Previously these accepted a drive
+// letter (e.g. 'C'), but the kernel now uses numeric drive IDs instead.
+int fat32_mount_ata_master(int drive_number);
+int fat32_mount_ata_slave(int drive_number);
+}

@@ -9,6 +9,12 @@
 * cmake
 * brain
 
+## how to clone
+
+```bash
+git clone --recurse-submodules https://github.com/tosterlolz/HanaCore.git
+```
+
 ## how to build
 ```bash
 just build # this build the kernel

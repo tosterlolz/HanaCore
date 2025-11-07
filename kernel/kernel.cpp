@@ -33,6 +33,8 @@ volatile struct limine_module_request module_request = {
 
 // Extern HHDM request (provided by Limine) — declared in limine_entry.c
 extern volatile struct limine_hhdm_request limine_hhdm_request;
+// Initialize syscall MSRs (defined in arch/syscall_init.cpp)
+extern "C" void init_syscall();
 
 // Helper: check whether `s` ends with `suffix` (NUL-terminated strings)
 static bool ends_with(const char* s, const char* suffix) {
@@ -104,6 +106,9 @@ extern "C" void kernel_main() {
     log_ok("GDT installed.\n");
     idt_install();
     log_ok("IDT installed.\n");
+    // Enable syscall/sysret path
+    init_syscall();
+    log_ok("Syscalls initialized.\n");
     heap_init(1024 * 1024); // 1 MiB heap
     log_ok("Heap initialized.\n");
     keyboard_init();
@@ -113,12 +118,44 @@ extern "C" void kernel_main() {
     log_info("Welcome to HanaCore - minimalist C++ OS kernel.");
     log_info("System ready.");
     // Try to initialize fat32 rootfs from a module named "rootfs.img"
-    // hanacore::fs::fat32_init_from_module("rootfs.img");
+    // If an embedded rootfs was linked into the kernel, initialize from it first.
+    if (module_request.response) {
+        volatile struct limine_module_response* mresp = module_request.response;
+        // Log module count for diagnostics
+        if (mresp->module_count == 0) {
+            log_info("No Limine modules found");
+        } else {
+            char tmp[64];
+            // simple print of module count
+            nano_log("Limine modules: %u", (unsigned) mresp->module_count);
+        }
+        for (uint64_t i = 0; i < mresp->module_count; ++i) {
+            volatile struct limine_file* mod = mresp->modules[i];
+            const char* path = (const char*)(uintptr_t)mod->path;
+            if (path && limine_hhdm_request.response) {
+                uint64_t hoff = limine_hhdm_request.response->offset;
+                if ((uint64_t)path < hoff) path = (const char*)((uintptr_t)path + hoff);
+            }
+            if (path && (ends_with(path, "rootfs.img") || ends_with(path, "rootfs.bin"))) {
+                // Prepare module virtual address (respect HHDM offset)
+                uintptr_t mod_addr = (uintptr_t)mod->address;
+                const void* mod_virt = (const void*)mod_addr;
+                if (limine_hhdm_request.response) {
+                    uint64_t off = limine_hhdm_request.response->offset;
+                    if ((uint64_t)mod_addr < off) mod_virt = (const void*)(off + mod_addr);
+                }
+                // Initialize FAT32 from the in-memory module image
+                hanacore::fs::fat32_init_from_memory(mod_virt, (size_t)mod->size);
+                break;
+            }
+        }
+    }
+
     // Auto-mount any module whose filename encodes a drive letter
     // (e.g. c.img -> mounted as C:). This allows users to provide
     // additional disk images as Limine modules and access them by
     // drive-letter paths like "C:/path/to/file".
-    fat32_mount_all_letter_modules();
+    hanacore::fs::fat32_mount_all_letter_modules();
 
     // Try to find a Limine module named "shell.elf" and execute it (ring-0)
     if (module_request.response) {
@@ -172,7 +209,6 @@ extern "C" void kernel_main() {
         // PIT/PIC here to prevent interrupts during early testing.
         log_info("kernel: about to schedule_next()");
         hanacore::scheduler::schedule_next();
-
         // If scheduler returns, just idle.
         for (;;) __asm__ volatile("hlt");
 }

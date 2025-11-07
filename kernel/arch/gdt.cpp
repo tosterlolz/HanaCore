@@ -72,6 +72,4 @@ extern "C" void gdt_install() {
 
     // Reload segment registers (far jump) via assembly helper
     gdt_reload_segments();
-    // Log success (debug port / screen will consume this when available)
-    print("[OK] GDT installed\n");
 }

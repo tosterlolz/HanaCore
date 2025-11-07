@@ -1,795 +1,519 @@
-// Minimal fat32_ reader that exposes the same small API the kernel expects
-// (fat32_* names are kept for compatibility with the rest of the kernel).
-// This implementation is read-only and intentionally small: it initializes
-// from a Limine module, can list directory entries and load file contents.
-
 #include "fat32.hpp"
-#include <stdint.h>
-#include <stddef.h>
+#include <cstdlib>
+#include <cstdint>
+#include <cstdio>
+#include "../libs/nanoprintf.h"
 
-#include "../../boot/limine.h"
 #include "../utils/logger.hpp"
-#include "../mem/heap.hpp"
+#include "../libs/libc.h"
 
-extern "C" {
-    int memcmp(const void* s1, const void* s2, size_t n);
-    void* memcpy(void* dst, const void* src, size_t n);
-    void* memset(void* s, int c, size_t n);
-    int strcmp(const char* a, const char* b);
-    size_t strlen(const char* s);
-}
+// If the kernel was started with Limine modules, we can mount a rootfs image
+// directly from memory instead of relying on ATA devices (which aren't
+// necessarily present when running from an ISO). Include the Limine header
+// and declare the request objects.
+#include "../../limine/limine.h"
 
-// Internal state: pointer to module image in memory and its size
-// Single default fs (kept for compatibility) and a mount table for drive letters
-static uint8_t* fs_image = nullptr;
-static size_t fs_image_size = 0;
-
-struct MountedFS {
-    bool in_use;
-    char letter; // uppercase ASCII letter 'A'..'Z'
-    uint8_t* image;
-    size_t image_size;
-    uint32_t bytes_per_sector;
-    uint32_t sectors_per_cluster;
-    uint32_t reserved_sector_count;
-    uint32_t num_fats;
-    uint32_t fat_size_sectors;
-    uint32_t root_cluster;
-    uint64_t fat_offset;
-    uint64_t first_data_offset;
-};
-
-static MountedFS mounts[16]; // up to 16 mounted volumes
-
-// fat32_ layout parameters
-static uint32_t bytes_per_sector = 0;
-static uint32_t sectors_per_cluster = 0;
-static uint32_t reserved_sector_count = 0;
-static uint32_t num_fats = 0;
-static uint32_t fat_size_sectors = 0;
-static uint32_t root_cluster = 0;
-static uint64_t fat_offset = 0;
-static uint64_t first_data_offset = 0;
-
-// Use the global module_request defined in kernel/kernel.cpp so we don't
-// register a second Limine request with the same ID (that causes a panic).
+extern volatile struct limine_hhdm_request limine_hhdm_request;
 extern volatile struct limine_module_request module_request;
 
-// For HHDM handling (provided by limine_entry.c)
-extern volatile struct limine_hhdm_request limine_hhdm_request;
+extern "C" int ata_read_sector(uint32_t lba, void* buf); // implemented by ATA driver (may be provided elsewhere)
 
-// Helper: read little-endian values from the image safely
+/* Fallback weak implementation: if a real ATA driver is linked in, it will override
+   this weak symbol. If not present, the fallback returns error. */
+extern "C" int __attribute__((weak)) ata_read_sector(uint32_t lba, void* buf) {
+    (void)lba; (void)buf;
+    return -1;
+}
+
+static uint32_t parse_uint32(const char* s) {
+    uint32_t v = 0;
+    if (!s) return 0;
+    while (*s >= '0' && *s <= '9') {
+        v = v * 10 + (uint32_t)(*s - '0');
+        ++s;
+    }
+    return v;
+}
+
 namespace hanacore {
-    namespace fs {
+namespace fs {
 
-        static inline uint16_t read_le16(const uint8_t* p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
-        static inline uint32_t read_le32(const uint8_t* p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
+// =================== FAT32 Structures ===================
 
-        // Convert a cluster number to an offset pointer into a given image (or NULL on OOB)
-        static inline void* cluster_ptr_for(MountedFS* m, uint32_t cluster) {
-            if (!m || !m->image) return NULL;
-            if (cluster < 2) return NULL;
-            uint64_t off = m->first_data_offset + (uint64_t)(cluster - 2) * (uint64_t)(m->bytes_per_sector * m->sectors_per_cluster);
-            if (off >= m->image_size) return NULL;
-            return (void*)(m->image + off);
-        }
+#pragma pack(push, 1)
+struct BPB_FAT32 {
+    uint8_t  jmpBoot[3];
+    uint8_t  OEMName[8];
+    uint16_t BytsPerSec;
+    uint8_t  SecPerClus;
+    uint16_t RsvdSecCnt;
+    uint8_t  NumFATs;
+    uint16_t RootEntCnt;
+    uint16_t TotSec16;
+    uint8_t  Media;
+    uint16_t FATSz16;
+    uint16_t SecPerTrk;
+    uint16_t NumHeads;
+    uint32_t HiddSec;
+    uint32_t TotSec32;
+    uint32_t FATSz32;
+    uint16_t ExtFlags;
+    uint16_t FSVer;
+    uint32_t RootClus;
+    uint16_t FSInfo;
+    uint16_t BkBootSec;
+    uint8_t  Reserved[12];
+    uint8_t  DrvNum;
+    uint8_t  Reserved1;
+    uint8_t  BootSig;
+    uint32_t VolID;
+    uint8_t  VolLab[11];
+    uint8_t  FilSysType[8];
+};
+#pragma pack(pop)
 
-        // Read fat32_ entry for `cluster` (returns next cluster number or 0x0FFFFFFF on EOC)
-        static uint32_t fat32_next_cluster_for(MountedFS* m, uint32_t cluster) {
-            if (!m || !m->image) return 0x0FFFFFFF;
-            uint64_t off = m->fat_offset + (uint64_t)cluster * 4;
-            if (off + 4 > m->image_size) return 0x0FFFFFFF;
-            uint32_t v = read_le32(m->image + off) & 0x0FFFFFFF;
-            return v;
-        }
+// =================== State ===================
 
-        // Backwards-compatible wrappers that operate on the single default
-        // fs_image (so existing functions that call cluster_ptr/fat32_next_cluster
-        // continue to work).
-        static MountedFS default_mount_storage;
-        static bool default_mount_inited = false;
+static BPB_FAT32 bpb;
+static bool fat32_ready = false;
+static uint32_t fat_begin_lba;
+static uint32_t cluster_begin_lba;
+static uint32_t sectors_per_cluster;
+static uint32_t bytes_per_sector;
+static uint32_t root_dir_cluster;
 
-        static MountedFS* get_default_mount() {
-            if (!fs_image) return NULL;
-            if (!default_mount_inited) {
-                default_mount_storage.in_use = true;
-                default_mount_storage.letter = 'C';
-                default_mount_storage.image = fs_image;
-                default_mount_storage.image_size = fs_image_size;
-                default_mount_storage.bytes_per_sector = bytes_per_sector;
-                default_mount_storage.sectors_per_cluster = sectors_per_cluster;
-                default_mount_storage.reserved_sector_count = reserved_sector_count;
-                default_mount_storage.num_fats = num_fats;
-                default_mount_storage.fat_size_sectors = fat_size_sectors;
-                default_mount_storage.root_cluster = root_cluster;
-                default_mount_storage.fat_offset = fat_offset;
-                default_mount_storage.first_data_offset = first_data_offset;
-                default_mount_inited = true;
+// =================== Helpers ===================
+
+// Simple helper: check whether `s` ends with `suffix` (NUL-terminated strings)
+static bool ends_with(const char* s, const char* suffix) {
+    if (!s || !suffix) return false;
+    const char* ps = s; size_t sl = 0; while (ps[sl]) ++sl;
+    const char* pf = suffix; size_t fl = 0; while (pf[fl]) ++fl;
+    if (fl > sl) return false;
+    const char* start = s + (sl - fl);
+    for (size_t i = 0; i < fl; ++i) if (start[i] != suffix[i]) return false;
+    return true;
+}
+
+static inline uint32_t cluster_to_lba(uint32_t cluster) {
+    return cluster_begin_lba + (cluster - 2) * sectors_per_cluster;
+}
+
+static uint32_t read_fat_entry(uint32_t cluster) {
+    uint8_t sector[512];
+    uint32_t fat_offset = cluster * 4;
+    uint32_t fat_sector = fat_begin_lba + (fat_offset / bytes_per_sector);
+    uint32_t ent_offset = fat_offset % bytes_per_sector;
+    if (bytes_per_sector > sizeof(sector)) {
+        hanacore::utils::log_ok_cpp("[FAT32] unsupported bytes_per_sector > 512");
+        return 0x0FFFFFF7;
+    }
+    if (ata_read_sector(fat_sector, sector) != 0)
+        return 0x0FFFFFF7; // mark as bad cluster on read error
+    uint32_t val = *(uint32_t*)&sector[ent_offset];
+    val &= 0x0FFFFFFF;
+    return val;
+}
+
+
+// =================== Initialization ===================
+
+int fat32_init_from_module(const char* module_name) {
+    // If Limine provided modules, try to find one matching module_name
+    if (module_request.response && module_name) {
+        volatile struct limine_module_response* resp = module_request.response;
+        for (uint64_t i = 0; i < resp->module_count; ++i) {
+            volatile struct limine_file* mod = resp->modules[i];
+            const char* path = (const char*)(uintptr_t)mod->path;
+            if (path && limine_hhdm_request.response) {
+                uint64_t hoff = limine_hhdm_request.response->offset;
+                if ((uint64_t)path < hoff) path = (const char*)((uintptr_t)path + hoff);
             }
-            return &default_mount_storage;
-        }
-
-        static inline void* cluster_ptr(uint32_t cluster) {
-            return cluster_ptr_for(get_default_mount(), cluster);
-        }
-
-        static uint32_t fat32_next_cluster(uint32_t cluster) {
-            return fat32_next_cluster_for(get_default_mount(), cluster);
-        }
-
-        // Initialize fat32_ parameters from the boot sector
-        int fat32_init_from_module(const char* module_name) {
-            if (!module_request.response) {
-                log_fail("fat32: no module response");
-                return 0;
-            }
-            volatile struct limine_module_response* resp = module_request.response;
-            // Diagnostic: report how many modules were provided
-            log_info("fat32: checking modules");
-            for (uint64_t i = 0; i < resp->module_count; ++i) {
-                volatile struct limine_file* mod = resp->modules[i];
-                const char* path = (const char*)(uintptr_t)mod->path;
-                // If Limine provided a physical pointer, convert it to the
-                // higher-half direct map (HHDM) virtual address so string ops
-                // and logging are valid. This mirrors how we handle mod->address
-                // below.
-                if (path && limine_hhdm_request.response) {
-                    uint64_t hoff = limine_hhdm_request.response->offset;
-                    if ((uint64_t)path < hoff) path = (const char*)((uintptr_t)path + hoff);
-                }
-                if (path) {
-                    log_info("fat32: module path:");
-                    log_info(path);
-                } else {
-                    log_info("fat32: module path: <null>");
-                }
-                // Additional diagnostics: report module size and first bytes
-                log_hex64("fat32: module size", (uint64_t)mod->size);
-                uintptr_t addr_dbg = (uintptr_t)mod->address;
+            if (!path) continue;
+            // match exact module name or path ending
+            if (ends_with(path, module_name) || strcmp(path, module_name) == 0) {
+                uintptr_t mod_addr = (uintptr_t)mod->address;
+                const void* mod_virt = (const void*)mod_addr;
                 if (limine_hhdm_request.response) {
                     uint64_t off = limine_hhdm_request.response->offset;
-                    if ((uint64_t)addr_dbg < off) addr_dbg = (uintptr_t)(off + addr_dbg);
+                    if ((uint64_t)mod_addr < off) mod_virt = (const void*)(off + mod_addr);
                 }
-                if (addr_dbg) {
-                    uint8_t* dbg = (uint8_t*)addr_dbg;
-                    char bbuf[64]; size_t bp = 0;
-                    for (size_t x = 0; x < 16 && x < mod->size && bp + 3 < sizeof(bbuf); ++x) {
-                        unsigned v = dbg[x];
-                        const char hex[] = "0123456789ABCDEF";
-                        bbuf[bp++] = hex[(v >> 4) & 0xF];
-                        bbuf[bp++] = hex[v & 0xF];
-                        bbuf[bp++] = ' ';
-                    }
-                    if (bp == 0) { bbuf[bp++] = '<'; bbuf[bp++] = 'e'; bbuf[bp++] = 'm'; bbuf[bp++] = 'p'; bbuf[bp++] = 't'; bbuf[bp++] = 'y'; }
-                    bbuf[bp] = '\0';
-                    log_info(bbuf);
-                }
-                if (!path) continue;
-                // Accept either suffix match or substring match so paths like
-                // "/boot/rootfs.img" or "rootfs.img" are both accepted.
-                size_t pl = 0; while (path[pl]) ++pl;
-                size_t ml = 0; if (module_name) while (module_name[ml]) ++ml;
-                bool match = false;
-                if (module_name && pl >= ml && strcmp(path + pl - ml, module_name) == 0) match = true;
-                if (!match && module_name) {
-                    // naive substring search (freestanding-friendly)
-                    const char* pp = path;
-                    while (*pp) {
-                        size_t k = 0;
-                        while (k < ml && pp[k] && pp[k] == module_name[k]) ++k;
-                        if (k == ml) { match = true; break; }
-                        ++pp;
-                    }
-                }
-                if (!match) {
-                    // Log that this module didn't match the requested name
-                    log_info("fat32: module did not match");
-                    continue;
-                }
-
-                uintptr_t addr = (uintptr_t)mod->address;
-                if (limine_hhdm_request.response) {
-                    uint64_t off = limine_hhdm_request.response->offset;
-                    if ((uint64_t)addr < off) addr = (uintptr_t)(off + addr);
-                }
-
-                // Map candidate image and try to detect FAT32 BPB. We accept the
-                // module if it either matches the requested name or looks like
-                // a valid FAT32 image by inspecting its BPB fields.
-                uint8_t* cand = (uint8_t*)addr;
-                size_t csize = (size_t)mod->size;
-                if (csize < 512) {
-                    log_info("fat32: module too small to be FS image");
-                    continue;
-                }
-
-                // Read BPB from candidate
-                uint32_t cb_bytes_per_sector = read_le16(cand + 11);
-                uint32_t cb_sectors_per_cluster = (uint32_t)cand[13];
-                uint32_t cb_reserved_sectors = read_le16(cand + 14);
-                uint32_t cb_num_fats = cand[16];
-                uint32_t cb_fat_size = read_le32(cand + 36);
-                uint32_t cb_root_cluster = read_le32(cand + 44);
-
-                // Basic sanity checks: BPB non-zero fields and boot sector signature 0x55AA
-                bool sig_ok = (cand[510] == 0x55 && cand[511] == 0xAA);
-                bool bpb_ok = sig_ok && (cb_bytes_per_sector != 0 && cb_sectors_per_cluster != 0 && cb_fat_size != 0);
-
-                if (!match && !bpb_ok) {
-                    log_info("fat32: module did not match and is not a fat32 image");
-                    continue;
-                }
-
-                // Accept this module: set fs_image from candidate
-                fs_image = cand;
-                fs_image_size = csize;
-
-                // Read BPB fields into globals
-                bytes_per_sector = cb_bytes_per_sector;
-                sectors_per_cluster = cb_sectors_per_cluster;
-                reserved_sector_count = cb_reserved_sectors;
-                num_fats = cb_num_fats;
-                fat_size_sectors = cb_fat_size; // FAT32
-                root_cluster = cb_root_cluster;
-
-                if (bytes_per_sector == 0 || sectors_per_cluster == 0 || fat_size_sectors == 0) {
-                    log_fail("fat32: invalid BPB in image");
+                if (fat32_init_from_memory(mod_virt, (size_t)mod->size) == 0) {
                     return 0;
                 }
-
-                fat_offset = (uint64_t)reserved_sector_count * bytes_per_sector;
-                uint64_t first_data_sector = reserved_sector_count + (uint64_t)num_fats * fat_size_sectors;
-                first_data_offset = first_data_sector * (uint64_t)bytes_per_sector;
-
-                log_ok("fat32: initialized from module");
-                return 1;
-            }
-            // If we didn't find a module by name, try a best-effort fallback:
-            // scan all provided Limine modules and pick the first one that
-            // looks like a valid FAT32 image (BPB checks). This makes the
-            // boot process tolerant to different ISO layouts where the
-            // module path may not include the filename we expected.
-            for (uint64_t j = 0; j < resp->module_count; ++j) {
-                volatile struct limine_file* mmod = resp->modules[j];
-                uintptr_t addr2 = (uintptr_t)mmod->address;
-                if (limine_hhdm_request.response) {
-                    uint64_t off = limine_hhdm_request.response->offset;
-                    if ((uint64_t)addr2 < off) addr2 = (uintptr_t)(off + addr2);
-                }
-                uint8_t* cand2 = (uint8_t*)addr2;
-                size_t csize2 = (size_t)mmod->size;
-                if (!cand2 || csize2 < 512) continue;
-                uint32_t cb_bytes_per_sector2 = read_le16(cand2 + 11);
-                uint32_t cb_sectors_per_cluster2 = (uint32_t)cand2[13];
-                uint32_t cb_fat_size2 = read_le32(cand2 + 36);
-                bool sig_ok2 = (cand2[510] == 0x55 && cand2[511] == 0xAA);
-                bool bpb_ok2 = sig_ok2 && (cb_bytes_per_sector2 != 0 && cb_sectors_per_cluster2 != 0 && cb_fat_size2 != 0);
-                if (!bpb_ok2) continue;
-                // accept this image as fallback rootfs
-                fs_image = cand2;
-                fs_image_size = csize2;
-                bytes_per_sector = cb_bytes_per_sector2;
-                sectors_per_cluster = cb_sectors_per_cluster2;
-                reserved_sector_count = read_le16(cand2 + 14);
-                num_fats = cand2[16];
-                fat_size_sectors = cb_fat_size2;
-                root_cluster = read_le32(cand2 + 44);
-                fat_offset = (uint64_t)reserved_sector_count * bytes_per_sector;
-                uint64_t first_data_sector2 = reserved_sector_count + (uint64_t)num_fats * fat_size_sectors;
-                first_data_offset = first_data_sector2 * (uint64_t)bytes_per_sector;
-                log_info("fat32: fallback: initialized from first valid FAT32 module");
-                return 1;
-            }
-
-            log_fail("fat32: no matching module found");
-            return 0;
-        }
-
-        // Initialize a MountedFS structure from an image buffer (BPB check + populate)
-        static int init_mounted_from_image(MountedFS* m, uint8_t* cand, size_t csize, char letter) {
-            if (!m || !cand || csize < 512) return 0;
-            uint32_t cb_bytes_per_sector = read_le16(cand + 11);
-            uint32_t cb_sectors_per_cluster = (uint32_t)cand[13];
-            uint32_t cb_reserved_sectors = read_le16(cand + 14);
-            uint32_t cb_num_fats = cand[16];
-            uint32_t cb_fat_size = read_le32(cand + 36);
-            uint32_t cb_root_cluster = read_le32(cand + 44);
-            bool sig_ok = (cand[510] == 0x55 && cand[511] == 0xAA);
-            bool bpb_ok = sig_ok && (cb_bytes_per_sector != 0 && cb_sectors_per_cluster != 0 && cb_fat_size != 0);
-            if (!bpb_ok) return 0;
-            m->in_use = true;
-            m->letter = letter;
-            m->image = cand;
-            m->image_size = csize;
-            m->bytes_per_sector = cb_bytes_per_sector;
-            m->sectors_per_cluster = cb_sectors_per_cluster;
-            m->reserved_sector_count = cb_reserved_sectors;
-            m->num_fats = cb_num_fats;
-            m->fat_size_sectors = cb_fat_size;
-            m->root_cluster = cb_root_cluster;
-            m->fat_offset = (uint64_t)cb_reserved_sectors * cb_bytes_per_sector;
-            uint64_t first_data_sector = cb_reserved_sectors + (uint64_t)cb_num_fats * cb_fat_size;
-            m->first_data_offset = first_data_sector * (uint64_t)cb_bytes_per_sector;
-            return 1;
-        }
-
-        // Find an unused mount slot
-        static MountedFS* find_free_mount() {
-            for (size_t i = 0; i < sizeof(mounts)/sizeof(mounts[0]); ++i) {
-                if (!mounts[i].in_use) return &mounts[i];
-            }
-            return NULL;
-        }
-
-        // Try to mount a Limine module as a drive letter (e.g. 'C')
-        int mount_module_as_drive(const char* module_name, char letter) {
-            if (!module_request.response || !module_name) return 0;
-            volatile struct limine_module_response* resp = module_request.response;
-            for (uint64_t i = 0; i < resp->module_count; ++i) {
-                volatile struct limine_file* mod = resp->modules[i];
-                const char* path = (const char*)(uintptr_t)mod->path;
-                if (!path) continue;
-                // HHDM fix for path pointer
-                if (limine_hhdm_request.response) {
-                    uint64_t hoff = limine_hhdm_request.response->offset;
-                    if ((uint64_t)path < hoff) path = (const char*)((uintptr_t)path + hoff);
-                }
-                // match exact name or suffix
-                size_t pl = 0; while (path[pl]) ++pl;
-                size_t ml = 0; while (module_name[ml]) ++ml;
-                bool match = false;
-                if (pl >= ml && strcmp(path + pl - ml, module_name) == 0) match = true;
-                if (!match) {
-                    // substring
-                    const char* pp = path;
-                    while (*pp) {
-                        size_t k = 0; while (k < ml && pp[k] && pp[k] == module_name[k]) ++k;
-                        if (k == ml) { match = true; break; }
-                        ++pp;
-                    }
-                }
-                if (!match) continue;
-
-                uintptr_t addr = (uintptr_t)mod->address;
-                if (limine_hhdm_request.response) {
-                    uint64_t off = limine_hhdm_request.response->offset;
-                    if ((uint64_t)addr < off) addr = (uintptr_t)(off + addr);
-                }
-                uint8_t* cand = (uint8_t*)addr;
-                size_t csize = (size_t)mod->size;
-                MountedFS* m = find_free_mount();
-                if (!m) return 0;
-                if (!init_mounted_from_image(m, cand, csize, (char)letter)) {
-                    // not a FAT32 image
-                    m->in_use = false;
-                    continue;
-                }
-                char logbuf[32];
-                // log which letter was mounted
-                log_info("fat32: mounted module as drive");
-                return 1;
-            }
-            return 0;
-        }
-
-        // Auto-mount modules whose filename encodes a drive letter, e.g.
-        // c.img, disk_c.img, drive_c.img -> mounted as 'C'
-        static void mount_all_letter_modules() {
-            if (!module_request.response) return;
-            volatile struct limine_module_response* resp = module_request.response;
-            for (uint64_t i = 0; i < resp->module_count; ++i) {
-                volatile struct limine_file* mod = resp->modules[i];
-                const char* path = (const char*)(uintptr_t)mod->path;
-                if (!path) continue;
-                if (limine_hhdm_request.response) {
-                    uint64_t hoff = limine_hhdm_request.response->offset;
-                    if ((uint64_t)path < hoff) path = (const char*)((uintptr_t)path + hoff);
-                }
-                // extract filename
-                const char* p = path; const char* last = p; while (*p) { if (*p == '/') last = p+1; ++p; }
-                const char* name = last;
-                // pattern: X.img -> letter name[0]
-                size_t ln = 0; while (name[ln]) ++ln;
-                if (ln >= 5) {
-                    // check single-letter like c.img
-                    if ((name[1] == '.' || name[2] == '.') && (name[ln-4] == '.' && name[ln-3] == 'i' && name[ln-2] == 'm' && name[ln-1] == 'g')) {
-                        // fallback generic check below
-                    }
-                }
-                // check patterns: "c.img" or "disk_c.img" or "drive_c.img"
-                char letter = 0;
-                if (ln == 5 && name[1] == '.' && name[2] == 'i' && name[3] == 'm' && name[4] == 'g') {
-                    // e.g. c.img
-                    if (name[0] >= 'a' && name[0] <= 'z') letter = name[0] - 'a' + 'A';
-                    else if (name[0] >= 'A' && name[0] <= 'Z') letter = name[0];
-                }
-                // disk_x.img or drive_x.img
-                if (!letter) {
-                    for (size_t k = 0; k + 6 < ln; ++k) {
-                        // look for '_x.img' at position k
-                        if (name[k] == '_' && ((name[k+2] == '.' && name[k+3]=='i' && name[k+4]=='m' && name[k+5]=='g') || (k+4 < ln && name[k+4]=='.' && name[k+5]=='i' && name[k+6]=='m' && name[k+7]=='g'))) {
-                            char c = name[k+1];
-                            if (c >= 'a' && c <= 'z') letter = c - 'a' + 'A';
-                            else if (c >= 'A' && c <= 'Z') letter = c;
-                            break;
-                        }
-                    }
-                }
-                if (letter) {
-                    // avoid double-mounting same letter
-                    bool already = false;
-                    for (size_t j = 0; j < sizeof(mounts)/sizeof(mounts[0]); ++j) if (mounts[j].in_use && mounts[j].letter == letter) { already = true; break; }
-                    if (!already) {
-                        // try mount by direct address
-                        uintptr_t addr = (uintptr_t)mod->address;
-                        if (limine_hhdm_request.response) {
-                            uint64_t off = limine_hhdm_request.response->offset;
-                            if ((uint64_t)addr < off) addr = (uintptr_t)(off + addr);
-                        }
-                        uint8_t* cand = (uint8_t*)addr;
-                        size_t csize = (size_t)mod->size;
-                        MountedFS* m = find_free_mount();
-                        if (m && init_mounted_from_image(m, cand, csize, letter)) {
-                            log_info("fat32: auto-mounted module as drive");
-                        }
-                    }
-                }
+                // otherwise continue to try ATA fallback
+                break;
             }
         }
-
-        // Ensure the filesystem is initialized; try common module name variants.
-        static int ensure_initialized() {
-            if (fs_image) return 1;
-            if (fat32_init_from_module("rootfs.img")) return 1;
-            if (fat32_init_from_module("rootfs")) return 1;
-            if (fat32_init_from_module("/boot/rootfs.img")) return 1;
-            // Accept alternative module names that users sometimes provide
-            // (e.g. "ramfs.img" or "ramfs"). This makes the boot process
-            // tolerant to different image naming conventions.
-            if (fat32_init_from_module("ramfs.img")) return 1;
-            if (fat32_init_from_module("ramfs")) return 1;
-            return 0;
-        }
-
-        // Normalize a short name from SFN entry to a C string (lowercase, dot-separated)
-        static void sfn_to_cstring(const uint8_t* name11, char* out, size_t out_len) {
-            size_t p = 0;
-            // name (8 chars)
-            for (int i = 0; i < 8 && p + 1 < out_len; ++i) {
-                char c = (char)name11[i];
-                if (c == ' ') continue;
-                if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
-                out[p++] = c;
-            }
-            // ext (3 chars)
-            bool has_ext = false;
-            char ext[4] = {0};
-            size_t ep = 0;
-            for (int i = 8; i < 11 && ep + 1 < sizeof(ext); ++i) {
-                char c = (char)name11[i];
-                if (c == ' ') continue;
-                if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
-                ext[ep++] = c; has_ext = true;
-            }
-            if (has_ext && p + 1 + ep < out_len) {
-                out[p++] = '.';
-                for (size_t i = 0; i < ep && p + 1 < out_len; ++i) out[p++] = ext[i];
-            }
-            out[p] = '\0';
-        }
-
-        // Case-insensitive compare of two NUL-terminated strings
-        static int ci_cmp(const char* a, const char* b) {
-            size_t i = 0;
-            while (a[i] && b[i]) {
-                char ca = a[i], cb = b[i];
-                if (ca >= 'A' && ca <= 'Z') ca = ca - 'A' + 'a';
-                if (cb >= 'A' && cb <= 'Z') cb = cb - 'A' + 'a';
-                if (ca != cb) return (int)(unsigned char)ca - (int)(unsigned char)cb;
-                ++i;
-            }
-            return (int)(unsigned char)a[i] - (int)(unsigned char)b[i];
-        }
-
-        // Lookup name in directory starting at cluster for a given mounted FS; returns first cluster for file/dir or 0 on not found.
-        static uint32_t fat32_lookup_in_dir_for(MountedFS* m, uint32_t start_cluster, const char* name) {
-            if (!m || !m->image || !name) return 0;
-            uint32_t cluster = start_cluster;
-            uint32_t cluster_size = m->bytes_per_sector * m->sectors_per_cluster;
-
-            while (cluster < 0x0FFFFFF8) {
-                uint8_t* buf = (uint8_t*)cluster_ptr_for(m, cluster);
-                if (!buf) return 0;
-                for (uint32_t off = 0; off + 32 <= cluster_size; off += 32) {
-                    uint8_t first = buf[off];
-                    if (first == 0x00) return 0; // no more entries
-                    if (first == 0xE5) continue; // deleted
-                    uint8_t attr = buf[off + 11];
-
-                    if (attr == 0x0F) {
-                        // LFN entry: skip here; rely on SFN matching (simple compatibility)
-                        continue;
-                    }
-
-                    // Short name entry
-                    char sfn[64];
-                    sfn_to_cstring(buf + off, sfn, sizeof(sfn));
-                    if (ci_cmp(sfn, name) == 0) {
-                        uint16_t ch = read_le16(buf + off + 20);
-                        uint16_t cl = read_le16(buf + off + 26);
-                        uint32_t first = ((uint32_t)ch << 16) | (uint32_t)cl;
-                        return first;
-                    }
-                }
-                // advance to next cluster in chain
-                uint32_t next = fat32_next_cluster_for(m, cluster);
-                if (next >= 0x0FFFFFF8) break;
-                cluster = next;
-            }
-            return 0;
-        }
-
-        // Backwards-compatible wrapper: lookup using the default mounted image
-        static uint32_t fat32_lookup_in_dir(uint32_t start_cluster, const char* name) {
-            return fat32_lookup_in_dir_for(get_default_mount(), start_cluster, name);
-        }
-
-        // Load a file (by path) into a bump-allocated buffer and return pointer; size in out_len
-    // Internal: get file from a specific mounted FS (path is relative to that FS root)
-    static void* fat32_get_file_alloc_for(MountedFS* m, const char* path, size_t* out_len) {
-            if (!m || !m->image || !path) return NULL;
-            // Trim leading slashes
-            const char* p = path; while (*p == '/') ++p;
-            // Start at root
-            uint32_t cur_clust = m->root_cluster ? m->root_cluster : 2;
-            if (*p == '\0') return NULL;
-
-            char comp[256];
-            const char* seg = p;
-            while (*seg) {
-                const char* slash = seg; while (*slash && *slash != '/') ++slash;
-                size_t len = (size_t)(slash - seg);
-                if (len == 0 || len >= sizeof(comp)) return NULL;
-                // copy segment and lowercase it
-                for (size_t i = 0; i < len; ++i) {
-                    char c = seg[i]; if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a'; comp[i] = c; }
-                comp[len] = '\0';
-                uint32_t next = fat32_lookup_in_dir_for(m, cur_clust, comp);
-                if (next == 0) return NULL;
-                cur_clust = next;
-                seg = slash; while (*seg == '/') ++seg;
-            }
-
-            // Now cur_clust points to the starting cluster of the file. We need the filesize.
-            // Locate SFN entry in parent directory to get file size and starting cluster
-            const char* q = p; const char* last_comp = p; uint32_t parent_clust = m->root_cluster ? m->root_cluster : 2;
-            // find parent by iterating segments until final
-            seg = p; const char* nextseg = seg; while (*nextseg) {
-                const char* slash = nextseg; while (*slash && *slash != '/') ++slash;
-                if (*slash == '/') {
-                    size_t len = (size_t)(slash - nextseg);
-                    if (len == 0 || len >= sizeof(comp)) return NULL;
-                    for (size_t i = 0; i < len; ++i) { char c = nextseg[i]; if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a'; comp[i] = c; }
-                    comp[len] = '\0';
-                    uint32_t nxt = fat32_lookup_in_dir_for(m, parent_clust, comp);
-                    if (nxt == 0) return NULL;
-                    parent_clust = nxt;
-                    nextseg = slash; while (*nextseg == '/') ++nextseg;
-                } else {
-                    size_t len = (size_t)(slash - nextseg);
-                    for (size_t i = 0; i < len; ++i) { char c = nextseg[i]; if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a'; comp[i] = c; }
-                    comp[len] = '\0';
-                    last_comp = comp;
-                    break;
-                }
-            }
-
-            uint32_t cluster = parent_clust;
-            uint32_t cluster_size = m->bytes_per_sector * m->sectors_per_cluster;
-            uint32_t found_first = 0;
-            uint32_t found_size = 0;
-            while (cluster < 0x0FFFFFF8) {
-                uint8_t* buf = (uint8_t*)cluster_ptr_for(m, cluster);
-                if (!buf) return NULL;
-                for (uint32_t off = 0; off + 32 <= cluster_size; off += 32) {
-                    uint8_t first = buf[off]; if (first == 0x00) return NULL; if (first == 0xE5) continue;
-                    uint8_t attr = buf[off + 11]; if (attr == 0x0F) continue;
-                    char sfn[64]; sfn_to_cstring(buf + off, sfn, sizeof(sfn));
-                    if (ci_cmp(sfn, last_comp) == 0) {
-                        uint16_t ch = read_le16(buf + off + 20);
-                        uint16_t cl = read_le16(buf + off + 26);
-                        uint32_t firstcl = ((uint32_t)ch << 16) | (uint32_t)cl;
-                        uint32_t fsize = read_le32(buf + off + 28);
-                        found_first = firstcl; found_size = fsize; break;
-                    }
-                }
-                if (found_first) break;
-                uint32_t next = fat32_next_cluster_for(m, cluster); if (next >= 0x0FFFFFF8) break; cluster = next;
-            }
-            if (!found_first) return NULL;
-
-            void* outbuf = hanacore::mem::kmalloc((size_t)found_size);
-            if (!outbuf) return NULL;
-            uint8_t* dst = (uint8_t*)outbuf;
-            uint32_t remaining = found_size;
-            uint32_t cur = found_first;
-            while (remaining > 0 && cur < 0x0FFFFFF8) {
-                uint8_t* src = (uint8_t*)cluster_ptr_for(m, cur);
-                if (!src) return NULL;
-                uint32_t tocopy = remaining < cluster_size ? remaining : cluster_size;
-                memcpy(dst, src, tocopy);
-                dst += tocopy; remaining -= tocopy;
-                if (remaining == 0) break;
-                cur = fat32_next_cluster_for(m, cur);
-            }
-            if (remaining != 0) return NULL;
-            if (out_len) *out_len = found_size;
-            return outbuf;
-        }
-
-    // Public: dispatch based on drive-letter prefix (e.g. "C:/path") or default FS
-    void* fat32_get_file_alloc(const char* path, size_t* out_len) {
-            if (!path) return NULL;
-            // if path begins with 'X:/' or 'x:/' treat as drive reference
-            if (((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' && path[2] == '/') {
-                char letter = path[0]; if (letter >= 'a' && letter <= 'z') letter = letter - 'a' + 'A';
-                // find mounted FS
-                for (size_t i = 0; i < sizeof(mounts)/sizeof(mounts[0]); ++i) {
-                    if (mounts[i].in_use && mounts[i].letter == letter) {
-                        return fat32_get_file_alloc_for(&mounts[i], path + 3, out_len);
-                    }
-                }
-                return NULL;
-            }
-            // fallback to default rootfs image
-            MountedFS* def = get_default_mount();
-            if (!def) return NULL;
-            return fat32_get_file_alloc_for(def, path, out_len);
-        }
-
-        // List directory entries for `path`. Calls `cb(name)` for each entry.
-        // List directory entries for a specific mounted FS
-        static int fat32_list_dir_for(MountedFS* m, const char* path, void (*cb)(const char* name)) {
-            if (!m || !m->image || !path || !cb) return -1;
-            const char* p = path; while (*p == '/') ++p;
-            uint32_t cur_clust = m->root_cluster ? m->root_cluster : 2;
-            if (*p != '\0') {
-                char comp[256];
-                const char* seg = p;
-                while (*seg) {
-                    const char* slash = seg; while (*slash && *slash != '/') ++slash;
-                    size_t len = (size_t)(slash - seg);
-                    if (len == 0 || len >= sizeof(comp)) return -1;
-                    for (size_t i = 0; i < len; ++i) { char c = seg[i]; if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a'; comp[i] = c; }
-                    comp[len] = '\0';
-                    uint32_t next = fat32_lookup_in_dir_for(m, cur_clust, comp);
-                    if (next == 0) return -1;
-                    cur_clust = next;
-                    seg = slash; while (*seg == '/') ++seg;
-                }
-            }
-
-            uint32_t cluster = cur_clust;
-            uint32_t cluster_size = m->bytes_per_sector * m->sectors_per_cluster;
-            int count = 0;
-            while (cluster < 0x0FFFFFF8) {
-                uint8_t* buf = (uint8_t*)cluster_ptr_for(m, cluster);
-                if (!buf) return -1;
-                for (uint32_t off = 0; off + 32 <= cluster_size; off += 32) {
-                    uint8_t first = buf[off]; if (first == 0x00) return count; if (first == 0xE5) continue;
-                    uint8_t attr = buf[off + 11];
-                    if (attr == 0x0F) continue; // skip LFN entries here
-                    char sfn[256]; sfn_to_cstring(buf + off, sfn, sizeof(sfn));
-                    cb(sfn); ++count;
-                }
-                uint32_t next = fat32_next_cluster_for(m, cluster); if (next >= 0x0FFFFFF8) break; cluster = next;
-            }
-            return count;
-        }
-
-        // Public list_dir: dispatch by drive-letter prefix or default FS
-        int fat32_list_dir(const char* path, void (*cb)(const char* name)) {
-            if (!ensure_initialized() || !path || !cb) return -1;
-            if (((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' && path[2] == '/') {
-                char letter = path[0]; if (letter >= 'a' && letter <= 'z') letter = letter - 'a' + 'A';
-                for (size_t i = 0; i < sizeof(mounts)/sizeof(mounts[0]); ++i) {
-                    if (mounts[i].in_use && mounts[i].letter == letter) return fat32_list_dir_for(&mounts[i], path + 3, cb);
-                }
-                return -1;
-            }
-            MountedFS* def = get_default_mount();
-            if (!def) return -1;
-            return fat32_list_dir_for(def, path, cb);
-        }
-
-        // Enumerate mounted filesystems; callback receives a printable line.
-        void fat32_list_mounts(void (*cb)(const char* line)) {
-            if (!cb) return;
-            for (size_t i = 0; i < sizeof(mounts)/sizeof(mounts[0]); ++i) {
-                if (!mounts[i].in_use) continue;
-                // Build a small printable line
-                char buf[64]; size_t p = 0;
-                buf[p++] = mounts[i].letter; buf[p++] = ':'; buf[p++] = ' ';
-                uint64_t sz = (uint64_t)mounts[i].image_size;
-                char rev[32]; size_t rn = 0;
-                if (sz == 0) rev[rn++] = '0';
-                while (sz > 0 && rn + 1 < sizeof(rev)) { rev[rn++] = (char)('0' + (sz % 10)); sz /= 10; }
-                for (size_t j = 0; j < rn; ++j) buf[p + j] = rev[rn - 1 - j];
-                p += rn;
-                const char* suf = " bytes";
-                size_t k = 0; while (suf[k]) { if (p + 1 < sizeof(buf)) buf[p++] = suf[k++]; else break; }
-                buf[p] = '\0';
-                cb(buf);
-            }
-        }
-
-    } // namespace fs
-} // namespace hanacore
-
-// C wrappers: preserve the original C ABI expected by the rest of the kernel.
-extern "C" {
-int fat32_init_from_module(const char* module_name) {
-    return hanacore::fs::fat32_init_from_module(module_name);
-}
-
-// Trigger auto-mounting of modules that encode drive letters in their names
-// (e.g. c.img, disk_c.img). Exposed as a C ABI wrapper so callers from
-// other translation units (like kernel_main) can invoke it at boot time.
-void fat32_mount_all_letter_modules() {
-    // mount_all_letter_modules is defined static within the
-    // hanacore::fs namespace above; call it to auto-mount letter-encoded modules.
-    hanacore::fs::mount_all_letter_modules();
-}
-
-// Provide a C-callable way to enumerate mounted volumes. The callback
-// receives a printable ASCII line describing the mount (e.g. "C: 32 MiB").
-void fat32_list_mounts(void (*cb)(const char* line)) {
-    if (!cb) return;
-    // iterate mounts in the C++ namespace
-    for (size_t i = 0; i < sizeof(mounts) / sizeof(mounts[0]); ++i) {
-        MountedFS* m = &mounts[i];
-        if (!m->in_use) continue;
-        // format basic info: "C: <size> bytes"
-        // we avoid using sprintf to keep freestanding; build a small buffer.
-        char buf[64];
-        size_t p = 0;
-        buf[p++] = m->letter;
-        buf[p++] = ':';
-        buf[p++] = ' ';
-        // size in bytes -> decimal
-        uint64_t sz = (uint64_t)m->image_size;
-        // produce decimal string (reverse)
-        char rev[32]; size_t rn = 0;
-        if (sz == 0) rev[rn++] = '0';
-        while (sz > 0 && rn + 1 < sizeof(rev)) { rev[rn++] = (char)('0' + (sz % 10)); sz /= 10; }
-        // copy reversed into buf
-        if (p + rn + 6 < sizeof(buf)) {
-            for (size_t j = 0; j < rn; ++j) buf[p + j] = rev[rn - 1 - j];
-            p += rn;
-            buf[p++] = ' ';
-            buf[p++] = 'b'; buf[p++] = 'y'; buf[p++] = 't'; buf[p++] = 'e'; buf[p++] = 's';
-        }
-        buf[p] = '\0';
-        cb(buf);
     }
+    // If we reach here, either there are no Limine modules or none matched
+    // the requested module_name. Do not attempt to read ATA here — the
+    // caller should decide whether to fall back to ATA. Return -1 to
+    // indicate module-based init did not occur.
+    return -1;
 }
 
-int64_t fat32_read_file(const char* path, void* buf, size_t len) {
-    if (!hanacore::fs::ensure_initialized() || !path) return -1;
-    // up to `len` bytes into `buf`.
-    size_t fsz = 0;
-    void* data = hanacore::fs::fat32_get_file_alloc(path, &fsz);
-    if (!data) return -1;
-    size_t tocopy = fsz < len ? fsz : len;
-    if (buf && tocopy) memcpy(buf, data, tocopy);
-    return (int64_t)tocopy;
+// Initialize FS by reading sector 0 from ATA (legacy path).
+int fat32_init_from_ata() {
+    uint8_t sector[512];
+    if (ata_read_sector(0, sector) != 0) {
+        hanacore::utils::log_info_cpp("[FAT32] Failed to read boot sector from ATA device");
+        return -1;
+    }
+
+    memcpy(&bpb, sector, sizeof(BPB_FAT32));
+
+    bytes_per_sector     = bpb.BytsPerSec;
+    sectors_per_cluster  = bpb.SecPerClus;
+    fat_begin_lba        = bpb.RsvdSecCnt;
+    cluster_begin_lba    = bpb.RsvdSecCnt + bpb.NumFATs * bpb.FATSz32;
+    root_dir_cluster     = bpb.RootClus;
+
+    fat32_ready = true;
+
+    hanacore::utils::log_ok_cpp("[FAT32] Initialized from ATA device");
+    {
+        char tmp[128];
+        npf_snprintf(tmp, sizeof(tmp), "[FAT32] %u bytes/sector, %u sectors/cluster, root cluster=%u",
+                     bytes_per_sector, sectors_per_cluster, root_dir_cluster);
+        hanacore::utils::log_ok_cpp(tmp);
+    }
+    return 0;
 }
 
-void* fat32_get_file_alloc(const char* path, size_t* out_len) {
-    return hanacore::fs::fat32_get_file_alloc(path, out_len);
+int fat32_init_from_memory(const void* data, size_t size) {
+    if (!data || size < 512) return -1;
+    const uint8_t* d = (const uint8_t*)data;
+    uint8_t sector[512];
+    // copy first sector (boot sector / BPB)
+    for (size_t i = 0; i < 512; ++i) sector[i] = (i < size) ? d[i] : 0;
+
+    memcpy(&bpb, sector, sizeof(BPB_FAT32));
+
+    bytes_per_sector     = bpb.BytsPerSec;
+    sectors_per_cluster  = bpb.SecPerClus;
+    fat_begin_lba        = bpb.RsvdSecCnt;
+    cluster_begin_lba    = bpb.RsvdSecCnt + bpb.NumFATs * bpb.FATSz32;
+    root_dir_cluster     = bpb.RootClus;
+
+    // Basic validation of BPB values
+    if (bytes_per_sector == 0 || bytes_per_sector > 4096) {
+        hanacore::utils::log_info_cpp("[FAT32] init_from_memory: unsupported bytes_per_sector");
+        return -1;
+    }
+    if (sectors_per_cluster == 0 || sectors_per_cluster > 128) {
+        hanacore::utils::log_info_cpp("[FAT32] init_from_memory: invalid sectors_per_cluster");
+        return -1;
+    }
+
+    fat32_ready = true;
+    hanacore::utils::log_ok_cpp("[FAT32] Initialized from memory module");
+    return 0;
 }
+
+// =================== Directory Listing ===================
 
 int fat32_list_dir(const char* path, void (*cb)(const char* name)) {
-    return hanacore::fs::fat32_list_dir(path, cb);
+    if (!cb) {
+        hanacore::utils::log_info_cpp("[FAT32] list_dir: null callback");
+        return -1;
+    }
+    if (!fat32_ready) {
+        char tmp[128];
+        const char* p = path ? path : "(null)";
+        npf_snprintf(tmp, sizeof(tmp), "[FAT32] list_dir: filesystem not ready (path=%s)", p);
+        hanacore::utils::log_info_cpp(tmp);
+        return -1;
+    }
+
+    (void)path;
+
+    {
+        char tmp[128];
+        npf_snprintf(tmp, sizeof(tmp),
+                     "[FAT32] list_dir: fat_ready=%d bytes/sector=%u sectors/cluster=%u fat_begin=%u cluster_begin=%u root=%u",
+                     fat32_ready ? 1 : 0, bytes_per_sector, sectors_per_cluster, fat_begin_lba, cluster_begin_lba, root_dir_cluster);
+        hanacore::utils::log_info_cpp(tmp); // print formatted buffer as plain string
+    }
+
+    uint32_t cluster = root_dir_cluster;
+    if (cluster < 2) {
+        char tmp[128];
+        npf_snprintf(tmp, sizeof(tmp), "[FAT32] list_dir: invalid root cluster=%u", cluster);
+        hanacore::utils::log_info_cpp(tmp);
+        return -1;
+    }
+
+    // safe large buffer for sector contents; ensure bytes_per_sector <= 4096
+    uint8_t sector[4096];
+    if (bytes_per_sector == 0 || bytes_per_sector > sizeof(sector)) {
+        hanacore::utils::log_info_cpp("[FAT32] unsupported bytes_per_sector (0 or >4096)");
+        return -1;
+    }
+
+    while (true) {
+        if (cluster == 0 || cluster == 0x0FFFFFF7 || cluster >= 0x0FFFFFF8) break;
+
+        for (uint32_t s = 0; s < sectors_per_cluster; ++s) {
+            uint32_t lba = cluster_to_lba(cluster) + s;
+
+            int r = ata_read_sector(lba, sector);
+            if (r != 0) {
+                char tmp[128];
+                npf_snprintf(tmp, sizeof(tmp), "[FAT32] ata_read_sector failed for lba=%u rc=%d (cluster=%u, sec=%u)", lba, r, cluster, s);
+                hanacore::utils::log_info_cpp(tmp);
+                return -1;
+            }
+
+            for (int i = 0; i < (int)bytes_per_sector; i += 32) {
+                uint8_t first = sector[i];
+                if (first == 0x00) return 0;
+                if (first == 0xE5) continue;
+                if ((sector[i + 11] & 0x08) != 0) continue;
+
+                char name[13];
+                // copy short name (8 bytes) and null-terminate
+                memcpy(name, &sector[i], 8);
+                name[8] = '\0';
+                // trim trailing spaces
+                for (int j = 7; j >= 0 && name[j] == ' '; --j) name[j] = '\0';
+
+                // append extension if present
+                if (sector[i + 8] != ' ') {
+                    char ext[4];
+                    ext[0] = sector[i + 8];
+                    ext[1] = sector[i + 9];
+                    ext[2] = sector[i + 10];
+                    ext[3] = '\0';
+                    size_t len = strlen(name);
+                    if (len + 1 + 3 + 1 <= sizeof(name)) {
+                        name[len++] = '.';
+                        name[len++] = ext[0];
+                        name[len++] = ext[1];
+                        name[len++] = ext[2];
+                        name[len] = '\0';
+                    }
+                }
+                cb(name);
+            }
+        }
+
+        uint32_t next = read_fat_entry(cluster);
+        if (next == 0x0FFFFFF7) {
+            char tmp[128];
+            npf_snprintf(tmp, sizeof(tmp), "[FAT32] list_dir: bad cluster entry read for cluster=%u", cluster);
+            hanacore::utils::log_info_cpp(tmp);
+            break;
+        }
+        if (next == 0 || next >= 0x0FFFFFF8) break;
+        if (next == cluster) {
+            hanacore::utils::log_info_cpp("[FAT32] FAT chain loop detected — aborting");
+            break;
+        }
+        cluster = next;
+    }
+
+    return 0;
 }
-} // extern "C"
+
+
+// =================== File Reading ===================
+
+int64_t fat32_read_file(const char* path, void* buf, size_t len) {
+    if (!fat32_ready || !path || !buf || len == 0) {
+        char tmp[128];
+        npf_snprintf(tmp, sizeof(tmp), "[FAT32] read_file: invalid args or FS not ready (path=%s, len=%u)", path ? path : "(null)", (unsigned)len);
+        hanacore::utils::log_info_cpp(tmp);
+        return -1;
+    }
+
+    // interpret path as cluster number string (e.g. "5")
+    uint32_t cluster = atoi(path);
+    if (cluster < 2) {
+        char tmp[128]; npf_snprintf(tmp, sizeof(tmp), "[FAT32] read_file: invalid cluster number=%u (path=%s)", cluster, path ? path : "(null)");
+        hanacore::utils::log_info_cpp(tmp);
+        return -1;
+    }
+
+    // defensive checks
+    if (bytes_per_sector == 0 || sectors_per_cluster == 0) {
+        hanacore::utils::log_info_cpp("[FAT32] read_file: filesystem not initialized properly");
+        return -1;
+    }
+
+    uint8_t sector[4096];
+    if (bytes_per_sector > sizeof(sector)) {
+        hanacore::utils::log_info_cpp("[FAT32] read_file: sector size too large (>4096)");
+        return -1;
+    }
+
+    size_t total = 0;
+
+    while (true) {
+        // stop if cluster chain ends or invalid cluster
+        if (cluster == 0 || cluster == 0x0FFFFFF7 || cluster >= 0x0FFFFFF8)
+            break;
+
+        for (uint32_t s = 0; s < sectors_per_cluster; ++s) {
+            uint32_t lba = cluster_to_lba(cluster) + s;
+
+            int r = ata_read_sector(lba, sector);
+            if (r != 0) {
+                char tmp[128];
+                npf_snprintf(tmp, sizeof(tmp),
+                             "[FAT32] read_file: ata_read_sector failed (lba=%u, rc=%d)", lba, r);
+                hanacore::utils::log_info_cpp(tmp);
+                return -1;
+            }
+
+            size_t remaining = len - total;
+            size_t copy_len = (remaining < bytes_per_sector) ? remaining : bytes_per_sector;
+            memcpy((uint8_t*)buf + total, sector, copy_len);
+            total += copy_len;
+
+            if (total >= len)
+                return (int64_t)total;
+        }
+
+        uint32_t next = read_fat_entry(cluster);
+        if (next == 0 || next == 0x0FFFFFF7 || next >= 0x0FFFFFF8)
+            break;
+        if (next == cluster) {
+            hanacore::utils::log_info_cpp("[FAT32] read_file: FAT chain loop detected");
+            break;
+        }
+        cluster = next;
+    }
+
+    return (int64_t)total;
+}
+
+
+void* fat32_get_file_alloc(const char* path, size_t* out_len) {
+    (void)path;
+    (void)out_len;
+    return nullptr;
+}
+
+// =================== Mount Info ===================
+
+void fat32_mount_all_letter_modules() {
+    hanacore::utils::log_ok_cpp("[FAT32] Auto-mounting drives (QEMU/VirtualBox)");
+
+    // First try to mount from any Limine-provided module image (e.g. rootfs.img)
+    if (module_request.response) {
+        volatile struct limine_module_response* resp = module_request.response;
+        // Diagnostic: list available modules so we can match correctly
+        {
+            char tmp[128];
+            npf_snprintf(tmp, sizeof(tmp), "[FAT32] Limine module_count=%u", (unsigned)resp->module_count);
+            hanacore::utils::log_info_cpp(tmp);
+        }
+        for (uint64_t i = 0; i < resp->module_count; ++i) {
+            volatile struct limine_file* mod = resp->modules[i];
+            const char* path = (const char*)(uintptr_t)mod->path;
+            // Print each module path for debugging (respect HHDM offset)
+            if (path && limine_hhdm_request.response) {
+                uint64_t hoff = limine_hhdm_request.response->offset;
+                if ((uint64_t)path < hoff) path = (const char*)((uintptr_t)path + hoff);
+            }
+            if (path) {
+                char tmp[160];
+                npf_snprintf(tmp, sizeof(tmp), "[FAT32] module[%u] path=%s size=%u", (unsigned)i, path, (unsigned)mod->size);
+                hanacore::utils::log_info_cpp(tmp);
+            }
+            // Also print physical/virtual address and a small hex preview of the module
+            {
+                uintptr_t mod_addr = (uintptr_t)mod->address;
+                const void* mod_virt = (const void*)mod_addr;
+                if (limine_hhdm_request.response) {
+                    uint64_t off = limine_hhdm_request.response->offset;
+                    if ((uint64_t)mod_addr < off) mod_virt = (const void*)(off + mod_addr);
+                }
+                char tmp2[192];
+                // show address and size
+                npf_snprintf(tmp2, sizeof(tmp2), "[FAT32] module[%u] addr=0x%016x size=%u", (unsigned)i, (unsigned)mod_addr, (unsigned)mod->size);
+                hanacore::utils::log_info_cpp(tmp2);
+                // preview first 16 bytes if accessible
+                if (mod_virt && mod->size > 0) {
+                    const uint8_t* b = (const uint8_t*)mod_virt;
+                    char hex[64];
+                    int off = 0;
+                    for (int j = 0; j < 16 && (size_t)j < mod->size; ++j) {
+                        off += npf_snprintf(hex + off, sizeof(hex) - off, "%02X ", (unsigned)b[j]);
+                    }
+                    hanacore::utils::log_info_cpp(hex);
+                }
+            }
+            if (!path) continue;
+
+            // Accept a wider range of module names: any .img, or names containing
+            // "rootfs" or the literal "ata_master". This handles variations in
+            // how the ISO/boot layout exposes the module path (e.g. "/boot/rootfs.img").
+            bool want = false;
+            if (ends_with(path, ".img") || ends_with(path, ".bin")) want = true;
+            if (!want && strstr(path, "rootfs")) want = true;
+            if (!want && strstr(path, "ata_master")) want = true;
+            if (want) {
+                uintptr_t mod_addr = (uintptr_t)mod->address;
+                const void* mod_virt = (const void*)mod_addr;
+                if (limine_hhdm_request.response) {
+                    uint64_t off = limine_hhdm_request.response->offset;
+                    if ((uint64_t)mod_addr < off) mod_virt = (const void*)(off + mod_addr);
+                }
+                if (fat32_init_from_memory(mod_virt, (size_t)mod->size) == 0) {
+                    hanacore::utils::log_ok_cpp("[FAT32] Mounted from module:");
+                    hanacore::utils::log_ok_cpp(path);
+                    fat32_list_mounts([](const char* line) { hanacore::utils::log_info_cpp(line); });
+                    return;
+                } else {
+                    // Try next module
+                    char tmp[128];
+                    npf_snprintf(tmp, sizeof(tmp), "[FAT32] Failed to init FS from module %s", path);
+                    hanacore::utils::log_info_cpp(tmp);
+                }
+            }
+        }
+    }
+
+    // Fallback to attempting to mount from ATA master device if module mount
+    // did not succeed.
+    if (fat32_init_from_ata() == 0) {
+        hanacore::utils::log_ok_cpp("[FAT32] Mounted from ATA fallback");
+    } else {
+        hanacore::utils::log_info_cpp("[FAT32] No usable module or ATA device found");
+    }
+    fat32_list_mounts([](const char* line) { hanacore::utils::log_info_cpp(line); });
+}
+
+void fat32_list_mounts(void (*cb)(const char* line)) {
+    if (cb)
+        cb("FAT32 mount: [0: ATA master]");
+}
+
+} // namespace fs
+} // namespace hanacore
+
+// =================== C Wrappers ===================
+
+extern "C" {
+
+// C-visible wrapper so callers that expect C linkage (e.g. kernel entry code)
+// can call into the C++ implementation in namespace hanacore::fs.
+extern "C" void fat32_mount_all_letter_modules() {
+    hanacore::fs::fat32_mount_all_letter_modules();
+}
+
+int fat32_mount_ata_master(int drive_number) {
+    hanacore::utils::log_ok_cpp("[FAT32] Mounting ATA master as %d:", drive_number);
+    (void)drive_number; // currently unused beyond logging
+    return hanacore::fs::fat32_init_from_ata();
+}
+
+int fat32_mount_ata_slave(int drive_number) {
+    hanacore::utils::log_ok_cpp("[FAT32] Mounting ATA slave as %d:", drive_number);
+    (void)drive_number;
+    return hanacore::fs::fat32_init_from_ata();
+}
+
+}

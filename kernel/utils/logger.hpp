@@ -13,10 +13,10 @@ extern "C" void log_hex64(const char *label, uint64_t value);
 // and C++ code can use the same logging API. Keep these inline and freestanding.
 namespace hanacore {
 	namespace utils {
-		inline void log_ok_cpp(const char *msg) { ::log_ok(msg); }
-		inline void log_fail_cpp(const char *msg) { ::log_fail(msg); }
-		inline void log_info_cpp(const char *msg) { ::log_info(msg); }
-		inline void log_debug_cpp(const char *msg) { ::log_debug(msg); }
+		inline void log_ok_cpp(const char *msg, ...) { ::log_ok(msg); }
+		inline void log_fail_cpp(const char *msg, ...) { ::log_fail(msg); }
+		inline void log_info_cpp(const char *msg, ...) { ::log_info(msg); }
+		inline void log_debug_cpp(const char *msg, ...) { ::log_debug(msg); }
 		inline void log_hex64_cpp(const char *label, uint64_t value) { ::log_hex64(label, value); }
 	} // namespace utils
 } // namespace hanacore

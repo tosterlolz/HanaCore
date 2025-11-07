@@ -50,16 +50,23 @@ static const char scancode_map_shift[] = {
 static bool shift_down = false;
 
 extern "C" void keyboard_init(void) {
-    // Drain the PS/2 output buffer if any
+    // Drain the PS/2 output buffer if any, but avoid consuming mouse bytes.
     while (inb(PS2_STATUS) & 1) {
+        // If data is from auxiliary device (mouse), stop draining so mouse
+        // initialization/driver can handle it.
+        if (inb(PS2_STATUS) & 0x20) break;
         (void)inb(PS2_DATA);
     }
 }
 
 // Return ASCII char or 0 if none available
 extern "C" char keyboard_poll_char(void) {
-    // Check output buffer full
-    if (!(inb(PS2_STATUS) & 1)) return 0;
+    // Check output buffer full and ensure data is from keyboard (not mouse).
+    uint8_t status = inb(PS2_STATUS);
+    if (!(status & 1)) return 0;
+    // If bit 5 is set, the byte is from the auxiliary device (mouse); do not
+    // consume it here to avoid keyboard seeing mouse packets as scancodes.
+    if (status & 0x20) return 0;
 
     uint8_t sc = inb(PS2_DATA);
 
