@@ -39,6 +39,8 @@ add_dependencies(install_iso mkrootfs)
 add_custom_command(TARGET install_iso POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory ${ISO_ROOT_DIR}/boot
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/rootfs.img ${ISO_ROOT_DIR}/boot/rootfs.img
+  # Also copy rootfs.img to the ISO root (some setups expose modules differently)
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/rootfs.img ${ISO_ROOT_DIR}/rootfs.img
   COMMENT "Copy rootfs.img into ISO staging area"
 )
 
@@ -53,8 +55,8 @@ add_custom_target(mkrootfs
 )
 
 file(GLOB LIMINE_FILES
-  "${CMAKE_SOURCE_DIR}/limine-bootloader/limine-bios.sys"
-  "${CMAKE_SOURCE_DIR}/limine-bootloader/limine-bios-cd.bin"
+  "${CMAKE_SOURCE_DIR}/limine/limine-bios.sys"
+  "${CMAKE_SOURCE_DIR}/limine/limine-bios-cd.bin"
   "${CMAKE_SOURCE_DIR}/cfg/limine.conf"
 )
 foreach(_f IN LISTS LIMINE_FILES)

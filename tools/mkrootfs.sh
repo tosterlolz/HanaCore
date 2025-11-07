@@ -5,7 +5,7 @@ set -euo pipefail
 BUILD_DIR="$1"
 SRC_DIR="$2"
 IMG="$BUILD_DIR/rootfs.img"
-SIZE_MB=32
+SIZE_MB=8
 TMPDIR="$(mktemp -d)"
 
 echo "mkrootfs: build dir=${BUILD_DIR}, src=${SRC_DIR}, img=${IMG}"

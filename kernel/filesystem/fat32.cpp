@@ -143,6 +143,27 @@ namespace hanacore {
                 } else {
                     log_info("fat32: module path: <null>");
                 }
+                // Additional diagnostics: report module size and first bytes
+                log_hex64("fat32: module size", (uint64_t)mod->size);
+                uintptr_t addr_dbg = (uintptr_t)mod->address;
+                if (limine_hhdm_request.response) {
+                    uint64_t off = limine_hhdm_request.response->offset;
+                    if ((uint64_t)addr_dbg < off) addr_dbg = (uintptr_t)(off + addr_dbg);
+                }
+                if (addr_dbg) {
+                    uint8_t* dbg = (uint8_t*)addr_dbg;
+                    char bbuf[64]; size_t bp = 0;
+                    for (size_t x = 0; x < 16 && x < mod->size && bp + 3 < sizeof(bbuf); ++x) {
+                        unsigned v = dbg[x];
+                        const char hex[] = "0123456789ABCDEF";
+                        bbuf[bp++] = hex[(v >> 4) & 0xF];
+                        bbuf[bp++] = hex[v & 0xF];
+                        bbuf[bp++] = ' ';
+                    }
+                    if (bp == 0) { bbuf[bp++] = '<'; bbuf[bp++] = 'e'; bbuf[bp++] = 'm'; bbuf[bp++] = 'p'; bbuf[bp++] = 't'; bbuf[bp++] = 'y'; }
+                    bbuf[bp] = '\0';
+                    log_info(bbuf);
+                }
                 if (!path) continue;
                 // Accept either suffix match or substring match so paths like
                 // "/boot/rootfs.img" or "rootfs.img" are both accepted.
@@ -223,6 +244,43 @@ namespace hanacore {
                 log_ok("fat32: initialized from module");
                 return 1;
             }
+            // If we didn't find a module by name, try a best-effort fallback:
+            // scan all provided Limine modules and pick the first one that
+            // looks like a valid FAT32 image (BPB checks). This makes the
+            // boot process tolerant to different ISO layouts where the
+            // module path may not include the filename we expected.
+            for (uint64_t j = 0; j < resp->module_count; ++j) {
+                volatile struct limine_file* mmod = resp->modules[j];
+                uintptr_t addr2 = (uintptr_t)mmod->address;
+                if (limine_hhdm_request.response) {
+                    uint64_t off = limine_hhdm_request.response->offset;
+                    if ((uint64_t)addr2 < off) addr2 = (uintptr_t)(off + addr2);
+                }
+                uint8_t* cand2 = (uint8_t*)addr2;
+                size_t csize2 = (size_t)mmod->size;
+                if (!cand2 || csize2 < 512) continue;
+                uint32_t cb_bytes_per_sector2 = read_le16(cand2 + 11);
+                uint32_t cb_sectors_per_cluster2 = (uint32_t)cand2[13];
+                uint32_t cb_fat_size2 = read_le32(cand2 + 36);
+                bool sig_ok2 = (cand2[510] == 0x55 && cand2[511] == 0xAA);
+                bool bpb_ok2 = sig_ok2 && (cb_bytes_per_sector2 != 0 && cb_sectors_per_cluster2 != 0 && cb_fat_size2 != 0);
+                if (!bpb_ok2) continue;
+                // accept this image as fallback rootfs
+                fs_image = cand2;
+                fs_image_size = csize2;
+                bytes_per_sector = cb_bytes_per_sector2;
+                sectors_per_cluster = cb_sectors_per_cluster2;
+                reserved_sector_count = read_le16(cand2 + 14);
+                num_fats = cand2[16];
+                fat_size_sectors = cb_fat_size2;
+                root_cluster = read_le32(cand2 + 44);
+                fat_offset = (uint64_t)reserved_sector_count * bytes_per_sector;
+                uint64_t first_data_sector2 = reserved_sector_count + (uint64_t)num_fats * fat_size_sectors;
+                first_data_offset = first_data_sector2 * (uint64_t)bytes_per_sector;
+                log_info("fat32: fallback: initialized from first valid FAT32 module");
+                return 1;
+            }
+
             log_fail("fat32: no matching module found");
             return 0;
         }
