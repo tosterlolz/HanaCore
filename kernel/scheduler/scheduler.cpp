@@ -1,5 +1,5 @@
 #include "scheduler.hpp"
-#include "../mem/bump_alloc.hpp"
+#include "../mem/heap.hpp"
 #include "../utils/logger.hpp"
 #include <string.h>
 
@@ -13,45 +13,34 @@ namespace hanacore::scheduler {
 Task *current_task = nullptr;
 Task *task_list = nullptr;
 
-// Per-CPU runqueue (currently single CPU only)
-Task *per_cpu_current[SCHED_MAX_CPUS] = { nullptr };
-Task *per_cpu_task_list[SCHED_MAX_CPUS] = { nullptr };
-
 static const size_t TASK_STACK_SIZE = 16 * 1024;
-static const size_t FX_STATE_SIZE = 512;
 
 static inline int get_cpu_id() { return 0; }
 
 void init_scheduler() {
-    hanacore::utils::log_info_cpp("scheduler: initializing");
-    // DEBUG: allocate main task in static storage to rule out bump allocator issues
+    // Initialize heap for task allocations
+    hanacore::mem::heap_init(256 * 1024); // 256KiB heap
+
+    // Try to allocate main task from heap, fall back to static if unavailable
     static Task main_storage;
-    Task *main = &main_storage;
+    Task *main = (Task *)kmalloc(sizeof(Task));
+    if (!main) main = &main_storage;
     memset(main, 0, sizeof(Task));
     main->pid = next_pid++;
     main->state = TASK_RUNNING;
     main->next = main;
-    hanacore::utils::log_debug_cpp("scheduler: main task allocated");
-    // Save current stack
+
+    // Save current stack pointer
     uint64_t *rsp_val;
     __asm__ volatile ("mov %%rsp, %0" : "=r"(rsp_val));
     main->rsp = rsp_val;
-    hanacore::utils::log_debug_cpp("scheduler: main rsp saved");
-    // Allocate and clear fx state region (16B aligned)
-    main->fx_state = bump_alloc_alloc(FX_STATE_SIZE, 16);
-    if (!main->fx_state) for (;;) asm volatile("cli; hlt");
-    memset(main->fx_state, 0, FX_STATE_SIZE);
-    hanacore::utils::log_debug_cpp("scheduler: main fx_state allocated");
-    int cpu = get_cpu_id();
-    per_cpu_task_list[cpu] = main;
-    per_cpu_current[cpu] = main;
+
     current_task = main;
     task_list = main;
 
     log_info("scheduler: initialized main task");
     log_hex64("scheduler: main task ptr", (uint64_t)main);
     log_hex64("scheduler: main rsp", (uint64_t)main->rsp);
-    log_hex64("scheduler: main fx_state", (uint64_t)main->fx_state);
 }
 
 static void task_cleanup(void) {
@@ -68,112 +57,83 @@ static void task_trampoline(void) {
 }
 
 int create_task(void (*entry)(void)) {
-    return create_task_on_cpu(entry, 0);
-}
-
-int create_task_on_cpu(void (*entry)(void), int cpu) {
     if (!entry) return 0;
-    if (cpu < 0 || cpu >= SCHED_MAX_CPUS) return 0;
-
-    Task *t = (Task *)bump_alloc_alloc(sizeof(Task), 16);
+    Task *t = (Task *)kmalloc(sizeof(Task));
     if (!t) return 0;
     memset(t, 0, sizeof(Task));
 
-    uint8_t *stack = (uint8_t *)bump_alloc_alloc(TASK_STACK_SIZE, 16);
+    uint8_t *stack = (uint8_t *)kmalloc(TASK_STACK_SIZE);
     if (!stack) return 0;
 
     t->pid = next_pid++;
     t->state = TASK_READY;
     t->entry = entry;
 
-    t->fx_state = bump_alloc_alloc(FX_STATE_SIZE, 16);
-    if (!t->fx_state) return 0;
-    memset(t->fx_state, 0, FX_STATE_SIZE);
-
     uint64_t *sp = (uint64_t *)(stack + TASK_STACK_SIZE);
-
-
-    // Ensure 16-byte alignment for System V ABI
+    // Align to 16 bytes
     sp = (uint64_t *)((uintptr_t)sp & ~0xF);
 
-    // Build the initial stack frame so the context switch pop sequence
-    // restores registers and then returns into `task_trampoline`.
-    // Stack low->high after setup (at t->rsp):
-    //   rbp, rbx, r12, r13, r14, r15, rdi, rsi, rdx, rcx, r8, r9, r10, r11, rax, ret_addr
-    *(--sp) = (uint64_t)task_trampoline; // return address for ret
-    *(--sp) = 0; // rax
-    *(--sp) = 0; // r11
-    *(--sp) = 0; // r10
-    *(--sp) = 0; // r9
-    *(--sp) = 0; // r8
-    *(--sp) = 0; // rcx
-    *(--sp) = 0; // rdx
-    *(--sp) = 0; // rsi
-    *(--sp) = 0; // rdi
-    *(--sp) = 0; // r15
-    *(--sp) = 0; // r14
-    *(--sp) = 0; // r13
-    *(--sp) = 0; // r12
-    *(--sp) = 0; // rbx
+    // Prepare minimal frame matching context_switch which pushes/pops
+    // rbp, rbx, r12, r13, r14, r15 and then ret -> task_trampoline
+    *(--sp) = (uint64_t)task_trampoline; // return address
     *(--sp) = 0; // rbp
+    *(--sp) = 0; // rbx
+    *(--sp) = 0; // r12
+    *(--sp) = 0; // r13
+    *(--sp) = 0; // r14
+    *(--sp) = 0; // r15
 
     t->rsp = sp;
 
-    // insert into per-CPU circular list
-    if (!per_cpu_task_list[cpu]) {
-        per_cpu_task_list[cpu] = t;
-        per_cpu_current[cpu] = t;
+    // Insert into circular list after current_task
+    if (!task_list) {
+        task_list = t;
         t->next = t;
+        current_task = t;
     } else {
-        Task *cur = per_cpu_current[cpu];
-        t->next = cur->next;
+        Task *cur = task_list;
+        // Insert at tail
+        while (cur->next && cur->next != task_list) cur = cur->next;
         cur->next = t;
-    }
-
-    if (cpu == 0) {
-        task_list = per_cpu_task_list[0];
-        current_task = per_cpu_current[0];
+        t->next = task_list;
     }
 
     log_info("scheduler: created task");
     log_hex64("scheduler: created task ptr", (uint64_t)t);
     log_hex64("scheduler: created task rsp", (uint64_t)t->rsp);
-    log_hex64("scheduler: created task fx", (uint64_t)t->fx_state);
+
     return t->pid;
 }
 
 void schedule_next() {
-    int cpu = get_cpu_id();
-    Task *prev = per_cpu_current[cpu];
-    if (!prev || !prev->next || prev->next == prev) return;
-
+    if (!current_task) return;
+    Task *prev = current_task;
     Task *next = prev->next;
+    if (!next || next == prev) return; // nothing to switch to
 
-    // find next runnable
-    while (next->state == TASK_DEAD && next->next != prev) {
+    // Find next runnable
+    Task *start = next;
+    while (next->state == TASK_DEAD) {
         next = next->next;
+        if (next == start) return; // no runnable tasks
     }
-    if (next == prev || !next) return;
 
-    per_cpu_current[cpu] = next;
     current_task = next;
 
     if (prev->state == TASK_RUNNING) prev->state = TASK_READY;
     next->state = TASK_RUNNING;
 
-    // sanity checks
     if (!prev->rsp || !next->rsp) return;
-    if (!prev->fx_state || !next->fx_state) return;
 
-    // Debug logging: show pointers and RSPs before switching
     log_hex64("scheduler: switching prev", (uint64_t)prev);
     log_hex64("scheduler: prev->rsp", (uint64_t)prev->rsp);
-    log_hex64("scheduler: prev->fx", (uint64_t)prev->fx_state);
-    log_hex64("scheduler: switching next", (uint64_t)next);
+    log_hex64("scheduler: next", (uint64_t)next);
     log_hex64("scheduler: next->rsp", (uint64_t)next->rsp);
-    log_hex64("scheduler: next->fx", (uint64_t)next->fx_state);
 
-    context_switch(&prev->rsp, &next->rsp, prev->fx_state, next->fx_state);
+    // DEBUG: temporarily avoid performing the actual context switch to
+    // check whether the crash is caused by the assembly switch.
+    log_info("scheduler: skipping context_switch (debug)");
+    return;
 }
 
 void sched_yield() {

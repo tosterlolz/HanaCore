@@ -5,8 +5,14 @@
 extern "C" {
 #endif
 
-// Initialize the kernel heap region with the given size (bytes).
-// This will allocate the heap region from the bump allocator.
+
+namespace hanacore { namespace mem {
+    // Forward declaration for C++ namespace
+    void heap_init(size_t size);
+    void *kmalloc(size_t size);
+    void kfree(void *ptr);
+}} // namespace hanacore::mem
+
 void heap_init(size_t size);
 
 // Allocate `size` bytes from kernel heap. Returns nullptr on failure.

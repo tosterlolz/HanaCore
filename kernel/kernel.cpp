@@ -10,7 +10,7 @@
 #include "filesystem/fat32.hpp"
 #include "scheduler/scheduler.hpp"
 #include "shell/shell.hpp"
-
+#include "mem/heap.hpp"
 // Linker script symbols for init/fini arrays
 extern "C" {
     extern void (*__init_array_start)();
@@ -100,6 +100,8 @@ extern "C" void kernel_main() {
     log_ok("GDT installed.\n");
     idt_install();
     log_ok("IDT installed.\n");
+    heap_init(1024 * 1024); // 1 MiB heap
+    log_ok("Heap initialized.\n");
     keyboard_init();
     log_ok("Keyboard initialized.");
     log_info("HanaCore Kernel v1.1 Initialized!");
@@ -143,15 +145,15 @@ extern "C" void kernel_main() {
         print("No external shell found — starting built-in shell as task.\n");
 
         // Initialize scheduler (cooperative for now) and create a task for the built-in shell.
-        log_info("kernel: initializing scheduler");
-        hanacore::scheduler::init_scheduler();
-        log_info("kernel: scheduler initialized");
+        // log_info("kernel: initializing scheduler");
+        // hanacore::scheduler::init_scheduler();
+        // log_info("kernel: scheduler initialized");
 
         // Create shell task
-        int shell_pid = hanacore::scheduler::create_task((void(*)(void))hanacore::shell::shell_main);
-        log_info("kernel: created shell task");
-        log_hex64("kernel: shell pid", (uint64_t)shell_pid);
-
+        // int shell_pid = hanacore::scheduler::create_task((void(*)(void))hanacore::shell::shell_main);
+        // log_info("kernel: created shell task");
+        // log_hex64("kernel: shell pid", (uint64_t)shell_pid);
+        hanacore::shell::shell_main();
         // Switch to the newly created task. Cooperative scheduling: tasks must call
         // `sched_yield()` to let other tasks run. We deliberately avoid enabling
         // PIT/PIC here to prevent interrupts during early testing.
