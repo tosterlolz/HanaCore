@@ -61,3 +61,4 @@ extern "C" void log_ok(const char *msg) { hanacore::utils::log_ok(msg); }
 extern "C" void log_fail(const char *msg) { hanacore::utils::log_fail(msg); }
 extern "C" void log_info(const char *msg) { hanacore::utils::log_info(msg); }
 extern "C" void log_hex64(const char *label, uint64_t value) { hanacore::utils::log_hex64(label, value); }
+extern "C" void log_debug(const char *msg) { hanacore::utils::log_debug(msg); }

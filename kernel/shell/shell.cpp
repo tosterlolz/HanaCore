@@ -18,7 +18,6 @@ static void print_prompt() {
 	print("user@hanacore:");
 	print(cwd);
 	print("$ ");
-
 }
 
 // Simple line buffer

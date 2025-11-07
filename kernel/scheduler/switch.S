@@ -20,27 +20,44 @@
     .type context_switch, @function
 context_switch:
 
-    # NOTE: fxsave disabled temporarily for debugging
-    # fxsave  (%rdx)
+    # Save FPU/SSE state to *old_fx
+    fxsave  (%rdx)
 
-    # Push callee-saved registers of old task onto its stack
     pushq   %rbp
     pushq   %rbx
     pushq   %r12
     pushq   %r13
     pushq   %r14
     pushq   %r15
+    pushq   %rdi
+    pushq   %rsi
+    pushq   %rdx
+    pushq   %rcx
+    pushq   %r8
+    pushq   %r9
+    pushq   %r10
+    pushq   %r11
+    pushq   %rax
 
-    # Save old RSP value
+    # Save old RSP value (pointing to the bottom of pushed register frame)
     movq    %rsp, (%rdi)
 
     # Load new RSP value
     movq    (%rsi), %rsp
 
-    # NOTE: fxrstor disabled temporarily for debugging
-    # fxrstor (%rcx)
+    # Restore FPU/SSE state of new task
+    fxrstor (%rcx)
 
-    # Pop callee-saved registers for the new task
+    # Pop registers in the reverse order to restore the new task's context
+    popq    %rax
+    popq    %r11
+    popq    %r10
+    popq    %r9
+    popq    %r8
+    popq    %rcx
+    popq    %rdx
+    popq    %rsi
+    popq    %rdi
     popq    %r15
     popq    %r14
     popq    %r13

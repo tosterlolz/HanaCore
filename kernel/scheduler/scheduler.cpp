@@ -92,16 +92,30 @@ int create_task_on_cpu(void (*entry)(void), int cpu) {
 
     uint64_t *sp = (uint64_t *)(stack + TASK_STACK_SIZE);
 
+
     // Ensure 16-byte alignment for System V ABI
     sp = (uint64_t *)((uintptr_t)sp & ~0xF);
 
+    // Build the initial stack frame so the context switch pop sequence
+    // restores registers and then returns into `task_trampoline`.
+    // Stack low->high after setup (at t->rsp):
+    //   rbp, rbx, r12, r13, r14, r15, rdi, rsi, rdx, rcx, r8, r9, r10, r11, rax, ret_addr
     *(--sp) = (uint64_t)task_trampoline; // return address for ret
-    *(--sp) = 0; // rbp
-    *(--sp) = 0; // rbx
-    *(--sp) = 0; // r12
-    *(--sp) = 0; // r13
-    *(--sp) = 0; // r14
+    *(--sp) = 0; // rax
+    *(--sp) = 0; // r11
+    *(--sp) = 0; // r10
+    *(--sp) = 0; // r9
+    *(--sp) = 0; // r8
+    *(--sp) = 0; // rcx
+    *(--sp) = 0; // rdx
+    *(--sp) = 0; // rsi
+    *(--sp) = 0; // rdi
     *(--sp) = 0; // r15
+    *(--sp) = 0; // r14
+    *(--sp) = 0; // r13
+    *(--sp) = 0; // r12
+    *(--sp) = 0; // rbx
+    *(--sp) = 0; // rbp
 
     t->rsp = sp;
 
