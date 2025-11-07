@@ -2,6 +2,7 @@
 #include <stddef.h>
 
 extern "C" void print(const char*);
+extern "C" void fat32_progress_update(int percent); // weak symbol provided by fat32
 
 // Callback for fat32_list_dir
 static void ls_cb(const char* name) {
@@ -22,15 +23,16 @@ static void ls_cb(const char* name) {
 
 extern "C" void builtin_ls_cmd(const char* path) {
     if (!path) {
-        print("ls: null path\n");
+        print("\nls: null path\n");
         return;
     }
 
-    print("Listing directory: ");
+    print("\nListing directory: ");
     print(path);
     print("\n");
 
     int rc = hanacore::fs::fat32_list_dir(path, ls_cb);
-    if (rc != 0)
-        print("ls: failed to list directory (check mount or cluster)\n");
+    if (rc != 0) {
+        print("\nls: failed to list directory (check mount or cluster)\n");
+    }
 }

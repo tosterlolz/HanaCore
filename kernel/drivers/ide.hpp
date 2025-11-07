@@ -14,6 +14,14 @@ bool ide_init();
 // Read `count` sectors starting at `lba` into `buf`. `count` must be >0
 // and <=256. Returns true on success.
 bool ide_read_lba28(uint64_t lba, uint8_t count, void* buf, bool master);
+bool ide_write_lba28(uint64_t lba, uint8_t count, const void* buf, bool master);
 
 } // namespace drivers
 } // namespace hanacore
+
+// C wrappers for simple sector read/write/capacity used by filesystem code.
+extern "C" {
+	int ata_read_sector(uint32_t lba, void* buf);
+	int ata_write_sector(uint32_t lba, const void* buf);
+	int32_t ata_get_sector_count();
+}

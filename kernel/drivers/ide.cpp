@@ -22,6 +22,10 @@ static inline unsigned short inw(unsigned short port) {
     return v;
 }
 
+static inline void outw(unsigned short port, unsigned short val) {
+    __asm__ volatile ("outw %0, %1" : : "a" (val), "dN" (port));
+}
+
 static inline void io_wait(void) {
     // port 0x80 is safe for short delays on x86
     __asm__ volatile ("outb %%al, $0x80" : : "a" (0));
@@ -121,6 +125,46 @@ bool ide_read_lba28(uint64_t lba64, uint8_t count, void* buf, bool master) {
     return true;
 }
 
+// Write up to 256 sectors using LBA28 (count 0 => 256). master==true selects master.
+bool ide_write_lba28(uint64_t lba64, uint8_t count, const void* buf, bool master) {
+    if (count == 0) count = 256;
+    if (count > 256) return false;
+    uint32_t lba = (uint32_t)lba64;
+    if (lba64 >> 28) return false;
+
+    if (!ata_wait_not_busy(500)) return false;
+
+    unsigned char drive = 0xE0 | ((master ? 0x0 : 0x10)) | ((lba >> 24) & 0x0F);
+    outb(ATA_DRIVE, drive);
+    io_wait();
+
+    outb(ATA_SECTOR_COUNT, count);
+    outb(ATA_LBA_LOW, (unsigned char)(lba & 0xFF));
+    outb(ATA_LBA_MID, (unsigned char)((lba >> 8) & 0xFF));
+    outb(ATA_LBA_HIGH, (unsigned char)((lba >> 16) & 0xFF));
+
+    outb(ATA_COMMAND, 0x30); // WRITE SECTORS (PIO)
+
+    const unsigned char* src = (const unsigned char*)buf;
+    for (unsigned int s = 0; s < count; ++s) {
+        unsigned int tries = 1000000;
+        while (tries--) {
+            unsigned char st = inb(ATA_COMMAND);
+            if (st & 0x01) return false; // ERR
+            if (!(st & 0x80) && (st & 0x08)) break; // not BSY and DRQ
+        }
+
+        // write 256 words (512 bytes)
+        for (int w = 0; w < 256; ++w) {
+            unsigned short word = (unsigned short)src[0] | ((unsigned short)src[1] << 8);
+            outw(ATA_DATA, word);
+            src += 2;
+        }
+    }
+
+    return true;
+}
+
 } // namespace drivers
 } // namespace hanacore
 
@@ -143,4 +187,55 @@ extern "C" int ata_read_sector(uint32_t lba, void* buf) {
     // from the master device.
     bool ok = hanacore::drivers::ide_read_lba28((uint64_t)lba, 1, buf, true);
     return ok ? 0 : -1;
+}
+
+// C wrapper for writing a single sector. Returns 0 on success, -1 on failure.
+extern "C" int ata_write_sector(uint32_t lba, const void* buf) {
+    static bool ide_initialized = false;
+    if (!ide_initialized) {
+        ide_initialized = hanacore::drivers::ide_init();
+        if (!ide_initialized) {
+            hanacore::utils::log_info_cpp("[IDE] ide_init() failed — ATA device not available");
+            return -1;
+        }
+    }
+    bool ok = hanacore::drivers::ide_write_lba28((uint64_t)lba, 1, buf, true);
+    return ok ? 0 : -1;
+}
+
+// Return the total number of user-addressable sectors reported by IDENTIFY (LBA28).
+// Returns -1 on failure.
+extern "C" int32_t ata_get_sector_count() {
+    unsigned short ident[256];
+
+    // Issue IDENTIFY to master
+    outb(hanacore::drivers::ATA_DRIVE, 0xA0);
+    io_wait();
+    outb(hanacore::drivers::ATA_COMMAND, 0xEC);
+    io_wait();
+
+    unsigned char s = inb(hanacore::drivers::ATA_COMMAND);
+    if (s == 0) return -1;
+    if (s & 0x01) return -1;
+
+    if (!hanacore::drivers::ata_wait_not_busy(500)) return -1;
+
+    // Wait for DRQ
+    unsigned int tries = 1000000;
+    while (tries--) {
+        unsigned char st = inb(hanacore::drivers::ATA_COMMAND);
+        if (st & 0x08) break;
+        if (st & 0x01) return -1;
+    }
+
+    // Read 256 words
+    for (int i = 0; i < 256; ++i) {
+        ident[i] = inw(hanacore::drivers::ATA_DATA);
+    }
+
+    // Words 60-61 contain total number of user-addressable sectors (LBA28)
+    uint32_t low = ident[60];
+    uint32_t high = ident[61];
+    uint32_t total = (high << 16) | low;
+    return (int32_t)total;
 }

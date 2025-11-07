@@ -49,26 +49,40 @@ static const char scancode_map_shift[] = {
 // Track shift key state
 static bool shift_down = false;
 
+// Debug helper: print a single byte as [HH]
+static void print_scancode(uint8_t sc) {
+    const char *hex = "0123456789ABCDEF";
+    char buf[4] = { '[', '0', '0', ']' };
+    buf[1] = hex[(sc >> 4) & 0xF];
+    buf[2] = hex[sc & 0xF];
+    buf[3] = '\0';
+    print(buf);
+}
+
 extern "C" void keyboard_init(void) {
-    // Drain the PS/2 output buffer if any, but avoid consuming mouse bytes.
+    // Drain the PS/2 output buffer if any
     while (inb(PS2_STATUS) & 1) {
-        // If data is from auxiliary device (mouse), stop draining so mouse
-        // initialization/driver can handle it.
-        if (inb(PS2_STATUS) & 0x20) break;
         (void)inb(PS2_DATA);
     }
 }
 
 // Return ASCII char or 0 if none available
 extern "C" char keyboard_poll_char(void) {
-    // Check output buffer full and ensure data is from keyboard (not mouse).
-    uint8_t status = inb(PS2_STATUS);
-    if (!(status & 1)) return 0;
-    // If bit 5 is set, the byte is from the auxiliary device (mouse); do not
-    // consume it here to avoid keyboard seeing mouse packets as scancodes.
-    if (status & 0x20) return 0;
+    // Check output buffer full
+    if (!(inb(PS2_STATUS) & 1)) return 0;
 
     uint8_t sc = inb(PS2_DATA);
+
+    // Handle extended prefix (E0). Read the following byte if available
+    if (sc == 0xE0) {
+        // If next byte hasn't arrived yet, bail (will be handled next poll)
+        if (!(inb(PS2_STATUS) & 1)) return 0;
+        uint8_t next = inb(PS2_DATA);
+        // For now just print the two-byte scancode for diagnosis and ignore
+        print_scancode(0xE0);
+        print_scancode(next);
+        return 0;
+    }
 
     // Key release event: top bit set
     if (sc & 0x80) {
@@ -89,6 +103,8 @@ extern "C" char keyboard_poll_char(void) {
         return c;
     }
 
+    // Unmapped scancode: print for debugging
+    print_scancode(sc);
     return 0;
 }
 

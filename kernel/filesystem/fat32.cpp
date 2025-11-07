@@ -7,6 +7,10 @@
 #include "../utils/logger.hpp"
 #include "../libs/libc.h"
 
+// Include IDE driver header so filesystem code can call ata_write_sector and
+// ata_get_sector_count when formatting or probing devices.
+#include "../drivers/ide.hpp"
+
 // If the kernel was started with Limine modules, we can mount a rootfs image
 // directly from memory instead of relying on ATA devices (which aren't
 // necessarily present when running from an ISO). Include the Limine header
@@ -16,13 +20,18 @@
 extern volatile struct limine_hhdm_request limine_hhdm_request;
 extern volatile struct limine_module_request module_request;
 
-extern "C" int ata_read_sector(uint32_t lba, void* buf); // implemented by ATA driver (may be provided elsewhere)
-
-/* Fallback weak implementation: if a real ATA driver is linked in, it will override
-   this weak symbol. If not present, the fallback returns error. */
+// The IDE header exposes the C wrappers we use (ata_read_sector, ata_write_sector,
+// ata_get_sector_count). Provide a weak fallback for ata_read_sector in case the
+// driver isn't linked in.
 extern "C" int __attribute__((weak)) ata_read_sector(uint32_t lba, void* buf) {
     (void)lba; (void)buf;
     return -1;
+}
+
+// Weak progress callback; callers (shell) can implement this symbol to
+// receive periodic progress updates during FAT operations. Default is no-op.
+extern "C" void __attribute__((weak)) fat32_progress_update(int percent) {
+    (void)percent;
 }
 
 static uint32_t parse_uint32(const char* s) {
@@ -298,6 +307,10 @@ int fat32_list_dir(const char* path, void (*cb)(const char* name)) {
             }
         }
 
+        // Notify progress using an indeterminate tick (percent=-1) so callers
+        // can update spinners. This keeps the UI responsive for long reads.
+        fat32_progress_update(-1);
+
         uint32_t next = read_fat_entry(cluster);
         if (next == 0x0FFFFFF7) {
             char tmp[128];
@@ -516,4 +529,173 @@ int fat32_mount_ata_slave(int drive_number) {
     return hanacore::fs::fat32_init_from_ata();
 }
 
+}
+
+// Formatting helper: create a minimal FAT32 layout on the ATA master device.
+namespace hanacore {
+namespace fs {
+
+static int fat32_format_ata_impl() {
+    // Query device capacity
+    int32_t total_sectors = ata_get_sector_count();
+    if (total_sectors <= 0) {
+        hanacore::utils::log_info_cpp("[FAT32] format: unable to determine device sector count");
+        return -1;
+    }
+
+    const uint32_t BytsPerSec = 512;
+    uint32_t SecPerClus = 1; // small cluster size to keep layout simple
+    uint16_t RsvdSecCnt = 32;
+    uint8_t NumFATs = 2;
+    uint32_t TotSec32 = (uint32_t)total_sectors;
+
+    // Iteratively compute FATSz32
+    uint32_t FATSz = 1;
+    for (int iter = 0; iter < 32; ++iter) {
+        uint32_t data_sectors = TotSec32 - RsvdSecCnt - NumFATs * FATSz;
+        if ((int32_t)data_sectors <= 0) return -1;
+        uint32_t clusters = data_sectors / SecPerClus;
+        uint32_t needed = (clusters * 4 + BytsPerSec - 1) / BytsPerSec;
+        if (needed == FATSz) break;
+        FATSz = needed;
+    }
+
+    uint32_t fat_begin = RsvdSecCnt;
+    uint32_t cluster_begin = RsvdSecCnt + NumFATs * FATSz;
+
+    // Prepare boot sector (BPB)
+    uint8_t boot[512];
+    for (int i = 0; i < 512; ++i) boot[i] = 0;
+    boot[0] = 0xEB; boot[1] = 0x58; boot[2] = 0x90; // JMP
+    const char* oem = "HanaCore";
+    for (int i = 0; i < 7 && oem[i]; ++i) boot[3 + i] = oem[i];
+    // bytes per sector
+    boot[11] = (uint8_t)(BytsPerSec & 0xFF);
+    boot[12] = (uint8_t)((BytsPerSec >> 8) & 0xFF);
+    boot[13] = (uint8_t)SecPerClus;
+    boot[14] = (uint8_t)(RsvdSecCnt & 0xFF);
+    boot[15] = (uint8_t)((RsvdSecCnt >> 8) & 0xFF);
+    boot[16] = NumFATs;
+    // RootEntCnt (0 for FAT32)
+    boot[17] = 0; boot[18] = 0;
+    // TotSec16 = 0
+    boot[19] = 0; boot[20] = 0;
+    boot[21] = 0xF8; // Media
+    boot[22] = 0; boot[23] = 0; // FATSz16
+    boot[24] = 0; boot[25] = 0; // SecPerTrk
+    boot[26] = 0; boot[27] = 0; // NumHeads
+    // HiddSec
+    boot[28] = 0; boot[29] = 0; boot[30] = 0; boot[31] = 0;
+    // TotSec32
+    boot[32] = (uint8_t)(TotSec32 & 0xFF);
+    boot[33] = (uint8_t)((TotSec32 >> 8) & 0xFF);
+    boot[34] = (uint8_t)((TotSec32 >> 16) & 0xFF);
+    boot[35] = (uint8_t)((TotSec32 >> 24) & 0xFF);
+    // FATSz32
+    boot[36] = (uint8_t)(FATSz & 0xFF);
+    boot[37] = (uint8_t)((FATSz >> 8) & 0xFF);
+    boot[38] = (uint8_t)((FATSz >> 16) & 0xFF);
+    boot[39] = (uint8_t)((FATSz >> 24) & 0xFF);
+    // ExtFlags, FSVer
+    boot[40] = 0; boot[41] = 0; boot[42] = 0; boot[43] = 0;
+    // RootClus = 2
+    boot[44] = 2; boot[45] = 0; boot[46] = 0; boot[47] = 0;
+    // FSInfo = 1, BkBootSec = 6
+    boot[48] = 1; boot[49] = 0; boot[50] = 6; boot[51] = 0;
+    // Drive number / BootSig
+    boot[64] = 0x80; boot[66] = 0x29;
+    // VolID
+    boot[67] = 0x12; boot[68] = 0x34; boot[69] = 0x56; boot[70] = 0x78;
+    // Volume label
+    const char* vlab = "NO NAME    ";
+    for (int i = 0; i < 11; ++i) boot[71 + i] = vlab[i];
+    // Filesystem type
+    const char* ftype = "FAT32   ";
+    for (int i = 0; i < 8; ++i) boot[82 + i] = ftype[i];
+    // signature
+    boot[510] = 0x55; boot[511] = 0xAA;
+
+    // FSInfo sector (sector 1)
+    uint8_t fsinfo[512];
+    for (int i = 0; i < 512; ++i) fsinfo[i] = 0;
+    // Lead signature
+    fsinfo[0] = 0x52; fsinfo[1] = 0x52; fsinfo[2] = 0x61; fsinfo[3] = 0x41; // 0x41615252 LE
+    // Struct signature at offset 484
+    fsinfo[484] = 0x72; fsinfo[485] = 0x72; fsinfo[486] = 0x41; fsinfo[487] = 0x61; // 0x61417272 LE
+    // Free cluster and next free set to 0xFFFFFFFF
+    fsinfo[488] = 0xFF; fsinfo[489] = 0xFF; fsinfo[490] = 0xFF; fsinfo[491] = 0xFF;
+    fsinfo[492] = 0xFF; fsinfo[493] = 0xFF; fsinfo[494] = 0xFF; fsinfo[495] = 0xFF;
+    fsinfo[508] = 0x55; fsinfo[509] = 0xAA;
+
+    // Write boot sector
+    if (ata_write_sector(0, boot) != 0) {
+        hanacore::utils::log_info_cpp("[FAT32] format: failed to write boot sector");
+        return -1;
+    }
+    // Write FSInfo
+    if (ata_write_sector(1, fsinfo) != 0) {
+        hanacore::utils::log_info_cpp("[FAT32] format: failed to write FSInfo");
+        return -1;
+    }
+
+    // Zero out remaining reserved sectors up to RsvdSecCnt
+    uint8_t zero[512]; for (int i = 0; i < 512; ++i) zero[i] = 0;
+    for (uint32_t s = 2; s < (uint32_t)RsvdSecCnt; ++s) {
+        if (ata_write_sector(s, zero) != 0) {
+            hanacore::utils::log_info_cpp("[FAT32] format: failed to clear reserved sectors");
+            return -1;
+        }
+    }
+
+    // Initialize FATs
+    // First FAT: set first three entries
+    uint8_t fatsec[512];
+    for (int i = 0; i < 512; ++i) fatsec[i] = 0;
+    // entry 0
+    uint32_t e0 = 0x0FFFFFF8;
+    memcpy(&fatsec[0], &e0, 4);
+    uint32_t e1 = 0xFFFFFFFF;
+    memcpy(&fatsec[4], &e1, 4);
+    uint32_t e2 = 0x0FFFFFFF;
+    memcpy(&fatsec[8], &e2, 4);
+
+    for (int f = 0; f < NumFATs; ++f) {
+        for (uint32_t si = 0; si < FATSz; ++si) {
+            uint32_t lba = fat_begin + f * FATSz + si;
+            if (si == 0) {
+                if (ata_write_sector(lba, fatsec) != 0) {
+                    hanacore::utils::log_info_cpp("[FAT32] format: failed to write FAT sector 0");
+                    return -1;
+                }
+            } else {
+                if (ata_write_sector(lba, zero) != 0) {
+                    hanacore::utils::log_info_cpp("[FAT32] format: failed to clear FAT sector");
+                    return -1;
+                }
+            }
+        }
+    }
+
+    // Zero first cluster (root directory) at cluster_begin
+    for (uint32_t s = 0; s < SecPerClus; ++s) {
+        uint32_t lba = cluster_begin + s;
+        if (ata_write_sector(lba, zero) != 0) {
+            hanacore::utils::log_info_cpp("[FAT32] format: failed to clear root cluster");
+            return -1;
+        }
+    }
+
+    hanacore::utils::log_ok_cpp("[FAT32] format: completed successfully");
+    return 0;
+}
+
+} // namespace fs
+} // namespace hanacore
+
+extern "C" {
+int fat32_format_ata_master(int drive_number) {
+    (void)drive_number;
+    hanacore::utils::log_info_cpp("[FAT32] format: starting (destructive!)");
+    return hanacore::fs::fat32_format_ata_impl();
+}
 }

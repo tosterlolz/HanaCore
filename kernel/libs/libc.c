@@ -90,14 +90,14 @@ char *strrchr(const char *s, int c) {
     return (char*)last;
 }
 
-char *strstr(const char *haystack, const char *needle) {
+const char *strstr(const char *haystack, const char *needle) {
     if (!haystack || !needle) return NULL;
-    if (*needle == '\0') return (char*)haystack;
+    if (*needle == '\0') return haystack;
     for (const char *h = haystack; *h; ++h) {
         const char *p = h;
         const char *n = needle;
         while (*p && *n && *p == *n) { ++p; ++n; }
-        if (*n == '\0') return (char*)h;
+        if (*n == '\0') return h;
     }
     return NULL;
 }
@@ -165,6 +165,7 @@ char *utoa(unsigned int value, char *buf, size_t buflen) {
     buf[pos] = '\0';
     return buf;
 }
+
 
 #ifdef __cplusplus
 } // extern "C"

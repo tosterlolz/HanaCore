@@ -182,3 +182,155 @@ void screen_draw_rect(int x, int y, int w, int h, uint32_t color) {
     for (int xx = 0; xx < w; ++xx) { put_pixel(x + xx, y, color); put_pixel(x + xx, y + h - 1, color); }
     for (int yy = 0; yy < h; ++yy) { put_pixel(x, y + yy, color); put_pixel(x + w - 1, y + yy, color); }
 }
+
+static void sprintf_putc(char* &buf, char c) {
+    *buf++ = c;
+}
+
+// Minimal reverse helper
+static void reverse_str(char* str, size_t len) {
+    for (size_t i = 0; i < len / 2; ++i) {
+        char t = str[i];
+        str[i] = str[len - 1 - i];
+        str[len - 1 - i] = t;
+    }
+}
+
+// Unsigned integer to string
+static size_t uint_to_str(uint64_t value, char* buf, int base, bool uppercase) {
+    const char* digits = uppercase ? "0123456789ABCDEF" : "0123456789abcdef";
+    size_t i = 0;
+    if (value == 0) buf[i++] = '0';
+    while (value > 0) {
+        buf[i++] = digits[value % base];
+        value /= base;
+    }
+    reverse_str(buf, i);
+    buf[i] = '\0';
+    return i;
+}
+
+// freestanding sprintf: %s, %c, %d, %u, %x, %p, %%
+int sprintf(char* buffer, const char* fmt, ...) {
+    char* buf_ptr = buffer;
+    va_list args;
+    va_start(args, fmt);
+
+    while (*fmt) {
+        if (*fmt != '%') {
+            *buf_ptr++ = *fmt++;
+            continue;
+        }
+        ++fmt;
+        switch (*fmt) {
+            case 's': {
+                const char* s = va_arg(args, const char*);
+                while (s && *s) *buf_ptr++ = *s++;
+                break;
+            }
+            case 'c': {
+                *buf_ptr++ = (char)va_arg(args, int);
+                break;
+            }
+            case 'd': {
+                int v = va_arg(args, int);
+                if (v < 0) { *buf_ptr++ = '-'; v = -v; }
+                char num[32]; uint_to_str((uint32_t)v, num, 10, false);
+                const char* p = num; while (*p) *buf_ptr++ = *p++;
+                break;
+            }
+            case 'u': {
+                unsigned int v = va_arg(args, unsigned int);
+                char num[32]; uint_to_str(v, num, 10, false);
+                const char* p = num; while (*p) *buf_ptr++ = *p++;
+                break;
+            }
+            case 'x': {
+                unsigned int v = va_arg(args, unsigned int);
+                char num[32]; uint_to_str(v, num, 16, false);
+                const char* p = num; while (*p) *buf_ptr++ = *p++;
+                break;
+            }
+            case 'p': {
+                void* ptr = va_arg(args, void*);
+                uintptr_t v = (uintptr_t)ptr;
+                *buf_ptr++ = '0'; *buf_ptr++ = 'x';
+                char num[32]; uint_to_str(v, num, 16, false);
+                const char* p = num; while (*p) *buf_ptr++ = *p++;
+                break;
+            }
+            case '%': *buf_ptr++ = '%'; break;
+            default: *buf_ptr++ = '?'; break;
+        }
+        ++fmt;
+    }
+
+    *buf_ptr = '\0';
+    va_end(args);
+    return (int)(buf_ptr - buffer);
+}
+
+// Print formatted string directly to Flanterm
+void print_fmt(const char* fmt, ...) {
+    char buf[512]; // statyczny bufor
+    va_list args;
+    va_start(args, fmt);
+    vsprintf(buf, fmt, args);
+    va_end(args);
+    print(buf); // używa Twojego Flanterm print()
+}
+
+// vsprintf implementacja dla print_fmt
+int vsprintf(char* buffer, const char* fmt, va_list args) {
+    char* buf_ptr = buffer;
+    while (*fmt) {
+        if (*fmt != '%') {
+            *buf_ptr++ = *fmt++;
+            continue;
+        }
+        ++fmt;
+        switch (*fmt) {
+            case 's': {
+                const char* s = va_arg(args, const char*);
+                while (s && *s) *buf_ptr++ = *s++;
+                break;
+            }
+            case 'c': {
+                *buf_ptr++ = (char)va_arg(args, int);
+                break;
+            }
+            case 'd': {
+                int v = va_arg(args, int);
+                if (v < 0) { *buf_ptr++ = '-'; v = -v; }
+                char num[32]; uint_to_str((uint32_t)v, num, 10, false);
+                const char* p = num; while (*p) *buf_ptr++ = *p++;
+                break;
+            }
+            case 'u': {
+                unsigned int v = va_arg(args, unsigned int);
+                char num[32]; uint_to_str(v, num, 10, false);
+                const char* p = num; while (*p) *buf_ptr++ = *p++;
+                break;
+            }
+            case 'x': {
+                unsigned int v = va_arg(args, unsigned int);
+                char num[32]; uint_to_str(v, num, 16, false);
+                const char* p = num; while (*p) *buf_ptr++ = *p++;
+                break;
+            }
+            case 'p': {
+                void* ptr = va_arg(args, void*);
+                uintptr_t v = (uintptr_t)ptr;
+                *buf_ptr++ = '0'; *buf_ptr++ = 'x';
+                char num[32]; uint_to_str(v, num, 16, false);
+                const char* p = num; while (*p) *buf_ptr++ = *p++;
+                break;
+            }
+            case '%': *buf_ptr++ = '%'; break;
+            default: *buf_ptr++ = '?'; break;
+        }
+        ++fmt;
+    }
+    *buf_ptr = '\0';
+    return (int)(buf_ptr - buffer);
+}
