@@ -26,6 +26,12 @@ namespace hanacore {
             print("\n");
         }
 
+        void log_debug(const char *msg) {
+            print("[DEBUG] ");
+            print(msg);
+            print("\n");
+        }
+
         void log_hex64(const char *label, uint64_t value) {
             if (!label) label = "";
             // Small stack buffer for hex conversion: "label0x0123456789ABCDEF\n"

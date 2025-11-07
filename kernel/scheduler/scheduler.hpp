@@ -17,11 +17,22 @@ struct Task {
     uint64_t *rsp;       // Saved stack pointer
     Task *next;          // Next task in circular list
     void (*entry)(void); // Entry point function
+    void *fx_state;      // pointer to FX save area (fxsave/fxrstor)
 };
 
-// Globals
+// Globals (legacy single-CPU views kept for compatibility)
 extern Task *current_task;
 extern Task *task_list;
+
+// Per-CPU runqueues (simple fixed-size array for now)
+// Tune max CPUs for your target; default to 4 for initial SMP support.
+constexpr int SCHED_MAX_CPUS = 4;
+extern Task *per_cpu_current[SCHED_MAX_CPUS];
+extern Task *per_cpu_task_list[SCHED_MAX_CPUS];
+
+// Helper: create task on a specific CPU. The old create_task(entry) will
+// still create on CPU 0 for compatibility.
+int create_task_on_cpu(void (*entry)(void), int cpu);
 
 // Scheduler API
 void init_scheduler();

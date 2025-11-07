@@ -102,7 +102,7 @@ extern "C" void kernel_main() {
     log_ok("IDT installed.\n");
     keyboard_init();
     log_ok("Keyboard initialized.");
-    log_info("HanaCore Kernel v1.0 Initialized!");
+    log_info("HanaCore Kernel v1.1 Initialized!");
     log_info("Bootloader: Limine (x86_64)");
     log_info("Welcome to HanaCore - minimalist C++ OS kernel.");
     log_info("System ready.");
@@ -139,12 +139,25 @@ extern "C" void kernel_main() {
     }
 
         // If no external shell was found, fall back to built-in shell as a task
-    keyboard_init();
-    print("No external shell found — starting built-in shell directly.\n");
-    
-    // Run shell directly without scheduler
-    hanacore::shell::shell_main();
-    
-    // Should never reach here; idle.
-    for (;;) __asm__ volatile("hlt");
+        keyboard_init();
+        print("No external shell found — starting built-in shell as task.\n");
+
+        // Initialize scheduler (cooperative for now) and create a task for the built-in shell.
+        log_info("kernel: initializing scheduler");
+        hanacore::scheduler::init_scheduler();
+        log_info("kernel: scheduler initialized");
+
+        // Create shell task
+        int shell_pid = hanacore::scheduler::create_task((void(*)(void))hanacore::shell::shell_main);
+        log_info("kernel: created shell task");
+        log_hex64("kernel: shell pid", (uint64_t)shell_pid);
+
+        // Switch to the newly created task. Cooperative scheduling: tasks must call
+        // `sched_yield()` to let other tasks run. We deliberately avoid enabling
+        // PIT/PIC here to prevent interrupts during early testing.
+        log_info("kernel: about to schedule_next()");
+        hanacore::scheduler::schedule_next();
+
+        // If scheduler returns, just idle.
+        for (;;) __asm__ volatile("hlt");
 }

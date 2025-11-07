@@ -1,24 +1,53 @@
-    .text
-    .globl context_switch
-    .type context_switch,@function
-// void context_switch(uint64_t **old_sp_ptr, uint64_t **new_sp_ptr)
+# context_switch.S
+# GNU assembler version for HanaCore scheduler
+# 
+# void context_switch(uint64_t **old_sp_ptr, uint64_t **new_sp_ptr,
+#                     void *old_fx, void *new_fx);
+#
+# Arguments:
+#   rdi = &old_sp_ptr
+#   rsi = &new_sp_ptr
+#   rdx = old_fx
+#   rcx = new_fx
+#
+# Callee-saved registers (System V): rbx, rbp, r12–r15
+# Stack layout after switch (for new task):
+#   [r15][r14][r13][r12][rbx][rbp][ret_addr]
+#   so context_switch pops these and returns into ret_addr (task_trampoline)
+
+    .section .text
+    .global context_switch
+    .type context_switch, @function
 context_switch:
-    // Save callee-saved registers on current stack
-    push %rbp
-    push %rbx
-    push %r12
-    push %r13
-    push %r14
-    push %r15
-    // Store current rsp into *old_sp_ptr (rdi holds pointer)
-    mov %rsp, (%rdi)
-    // Load new rsp from *new_sp_ptr (rsi holds pointer)
-    mov (%rsi), %rsp
-    // Restore callee-saved registers from new stack
-    pop %r15
-    pop %r14
-    pop %r13
-    pop %r12
-    pop %rbx
-    pop %rbp
+
+    # NOTE: fxsave disabled temporarily for debugging
+    # fxsave  (%rdx)
+
+    # Push callee-saved registers of old task onto its stack
+    pushq   %rbp
+    pushq   %rbx
+    pushq   %r12
+    pushq   %r13
+    pushq   %r14
+    pushq   %r15
+
+    # Save old RSP value
+    movq    %rsp, (%rdi)
+
+    # Load new RSP value
+    movq    (%rsi), %rsp
+
+    # NOTE: fxrstor disabled temporarily for debugging
+    # fxrstor (%rcx)
+
+    # Pop callee-saved registers for the new task
+    popq    %r15
+    popq    %r14
+    popq    %r13
+    popq    %r12
+    popq    %rbx
+    popq    %rbp
+
     ret
+
+    .size context_switch, .-context_switch
