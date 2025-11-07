@@ -138,25 +138,12 @@ extern "C" void kernel_main() {
         }
     }
 
-    // If no external shell was found, fall back to built-in shell as a task
+        // If no external shell was found, fall back to built-in shell as a task
     keyboard_init();
-    print("No external shell found — starting built-in shell as task.\n");
-    // Initialize scheduler and create a task for the built-in shell.
-    log_info("kernel: initializing scheduler");
-    init_scheduler();
-    log_info("kernel: scheduler initialized");
-    // Initialize legacy PIC and PIT so we get timer interrupts for preemption
-    pic_remap();
-    pit_init(100); // 100 Hz scheduler tick
-    log_info("PIT initialized (100Hz)");
-    int shell_pid = create_task((void(*)(void))hanacore::shell::shell_main);
-    log_info("kernel: created shell task");
-    log_hex64("kernel: shell pid", (uint64_t)shell_pid);
-    // Switch to the newly created task. After this call the scheduler will
-    // run tasks; kernel_main will stay halted here.
-    log_info("kernel: about to schedule_next()");
-    schedule_next();
-    log_info("kernel: returned from schedule_next()");
+    print("No external shell found — starting built-in shell directly.\n");
+    
+    // Run shell directly without scheduler
+    hanacore::shell::shell_main();
     
     // Should never reach here; idle.
     for (;;) __asm__ volatile("hlt");
