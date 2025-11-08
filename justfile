@@ -25,7 +25,7 @@ build: build-kernel
 	cmake --build build/cmake --target install_iso || true; \
 	# Ensure boot dir exists
 	mkdir -p build/cmake/iso_root/boot; \
-	# Create ISO from CMake staging area (xorriso optional)
+	# Create ISO from CMake staging area (xorriso/genisoimage/mkisofs optional)
 	if command -v xorriso >/dev/null 2>&1; then \
 		xorriso -as mkisofs -b boot/limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table build/cmake/iso_root -o build/HanaCore.iso 2>/dev/null || true; \
 	elif command -v genisoimage >/dev/null 2>&1; then \
@@ -33,9 +33,14 @@ build: build-kernel
 	elif command -v mkisofs >/dev/null 2>&1; then \
 		mkisofs -b boot/limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table -o build/HanaCore.iso build/cmake/iso_root || true; \
 	else \
-		echo "No ISO tool (xorriso/genisoimage/mkisofs) found; skipping ISO creation"; \
+		echo "No ISO tool (xorriso/genisoimage/mkisofs) found; cannot create ISO"; \
 	fi; \
-	echo "🌸 Built HanaCore ISO at build/HanaCore.iso"
+	if [ -f build/HanaCore.iso ]; then \
+		echo "🌸 Built HanaCore ISO at build/HanaCore.iso"; \
+	else \
+		echo "⚠️  ISO not created. Please install one of: xorriso, genisoimage, or mkisofs"; \
+		exit 1; \
+	fi
 
 run: build
 	@echo "🌸 Starting HanaCore in QEMU..."

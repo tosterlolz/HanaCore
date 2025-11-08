@@ -36,8 +36,8 @@ add_custom_target(install_iso ALL
 # include a bundled rootfs image and the mkrootfs target is not created.
 
 file(GLOB LIMINE_FILES
-  "${CMAKE_SOURCE_DIR}/limine/limine-bios.sys"
-  "${CMAKE_SOURCE_DIR}/limine/limine-bios-cd.bin"
+  "${CMAKE_SOURCE_DIR}/third_party/limine/limine-bios.sys"
+  "${CMAKE_SOURCE_DIR}/third_party/limine/limine-bios-cd.bin"
   "${CMAKE_SOURCE_DIR}/cfg/limine.conf"
 )
 foreach(_f IN LISTS LIMINE_FILES)

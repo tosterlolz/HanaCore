@@ -1,49 +1,61 @@
 #include "../../drivers/ide.hpp"
 #include "../../filesystem/ext3.hpp"
-#include "../../filesystem/hanafs.hpp"
-#include "../../filesystem/fat32.hpp"
 #include "../../filesystem/vfs.hpp"
+#include "../../filesystem/fat32.hpp"
+#include "../../filesystem/hanafs.hpp"
 #include "../../libs/libc.h"
 #include <stddef.h>
+#include <string.h>
 
 extern "C" void print(const char*);
 
-// callback used by ext3_list_mounts
-static void lsblk_cb(const char* line) {
-    if (!line) return;
-    // color: cyan for device
-    print("\x1b[36m");
-    print(line);
-    print("\x1b[0m\n");
+// Simple lsblk implementation that avoids raw ATA probing (unsafe in some
+// VMs) and instead lists device nodes present under /dev via the VFS,
+// then prints known mounts from VFS/FAT32/HanaFS. This shows unmounted
+// devices and a readable mounts section.
+
+struct StringList { const char* items[64]; int count; };
+
+static void collect_dev_cb(const char* name, void* ctx) {
+    if (!name || !ctx) return;
+    StringList* list = (StringList*)ctx;
+    if (list->count < 64) list->items[list->count++] = name;
 }
 
-// internal flag used by callbacks to indicate we printed at least one mount
-static int lsblk_found_mounts = 0;
-
-static void lsblk_mount_cb(const char* line) {
-    if (!line) return;
-    lsblk_found_mounts = 1;
-    // reuse the pretty-print callback
-    lsblk_cb(line);
+static void collect_mount_cb(const char* line, void* ctx) {
+    if (!line || !ctx) return;
+    StringList* list = (StringList*)ctx;
+    if (list->count < 64) list->items[list->count++] = line;
 }
 
 extern "C" void builtin_lsblk_cmd(const char* unused) {
-    // Probe of raw ATA sectors can destabilize some virtual machines
-    // (causes VM crashes in VirtualBox). Skip direct probing here and
-    // instead instruct the user to mount devices explicitly using the
-    // `mount` builtin. The VFS mount list below will show any mounted
-    // devices.
-    print("ATA master: probe skipped (use 'mount' to attach devices)\n");
-    print("ATA slave: probe skipped (use 'mount' to attach devices)\n");
+    (void)unused;
+    // Header
+    print("NAME        MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS\n");
 
-    // Print VFS-registered mounts only. Avoid probing ATA or device hardware
-    // here — direct ATA probing destabilizes some VMs. The `mount` builtin
-    // should be used to attach devices explicitly; those mounts will be
-    // visible via the VFS registry.
-    lsblk_found_mounts = 0;
-    hanacore::fs::vfs_list_mounts(lsblk_mount_cb);
+    // Collect device node names from /dev via VFS
+    StringList devs; devs.count = 0;
+    hanacore::fs::vfs_list_dir("/dev", [](const char* name){
+        // vfs_list_dir expects a callback 'void (*cb)(const char*)' so use a
+        // small trampoline that appends into our static StringList via a
+        // temporary global — to avoid introducing globals we instead call
+        // a helper that prints directly. Simpler: print device entries
+        // directly here by reusing print().
+        char buf[128];
+        // NAME, MAJ:MIN, RM, SIZE, RO, TYPE
+        snprintf(buf, sizeof(buf), "%-11s %5s %2s %6s %2s %4s\n", name, "0:0", "0", "unknown", "0", "disk");
+        print(buf);
+    });
 
-    if (!lsblk_found_mounts) {
-        print("[NO FS]\n");
-    }
+    // Now print mounted filesystems collected from VFS/FAT32/HanaFS
+    print("\nMOUNTPOINTS:\n");
+    // VFS mounts
+    hanacore::fs::vfs_list_mounts([](const char* line){ if (line) { print(" "); print(line); print("\n"); } });
+    // FAT32 mounts
+    hanacore::fs::fat32_list_mounts([](const char* line){ if (line) { print(" "); print(line); print("\n"); } });
+    // HanaFS mounts
+    hanacore::fs::hanafs_list_mounts([](const char* line){ if (line) { print(" "); print(line); print("\n"); } });
+
+    // If no mounts, say so
+    // (vfs_list_mounts prints nothing if none)
 }
