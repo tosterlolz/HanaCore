@@ -4,6 +4,8 @@
 #include "hanafs.hpp"
 #include "ramfs.hpp"
 #include "fat32.hpp"
+#include "isofs.hpp"
+#include "floppy.hpp"
 #include "../mem/heap.hpp"
 #include "procfs.hpp"
 #include "devfs.hpp"
@@ -90,6 +92,12 @@ int vfs_list_dir(const char* path, void (*cb)(const char* name)) {
             }
             if (strcmp(fsname, "devfs") == 0) {
                 return devfs_list_dir(rel, cb);
+            }
+            if (strcmp(fsname, "isofs") == 0) {
+                return isofs_list_dir(rel, cb);
+            }
+            if (strcmp(fsname, "floppy") == 0) {
+                return hanacore::fs::floppy_list_dir(rel, cb);
             }
             // Unknown fsname, break out and fallback
             break;

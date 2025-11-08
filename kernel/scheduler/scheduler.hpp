@@ -58,6 +58,8 @@ void sched_yield();
 void schedule_next();
 int sched_getpid();
 Task* find_task_by_pid(int pid);
+void kill_task(int pid);
+void wait_task(int pid);
 
 } // namespace hanacore::scheduler
 

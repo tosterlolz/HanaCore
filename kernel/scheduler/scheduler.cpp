@@ -45,13 +45,22 @@ void init_scheduler() {
 // ==========================================================
 // TASK CLEANUP
 // ==========================================================
-static void task_cleanup() {
+static void idle_task() {
+    for (;;) {
+        asm volatile("sti; hlt");
+    }
+}
+
+void task_cleanup() {
     log_info("scheduler: task %d exiting", current_task ? current_task->pid : -1);
     if (current_task) {
         current_task->state = TASK_DEAD;
     }
+
     schedule_next();
-    for (;;) asm volatile("cli; hlt");
+
+    log_info("scheduler: no more tasks, starting idle loop");
+    idle_task();
 }
 
 // ==========================================================
@@ -278,72 +287,92 @@ void schedule_next() {
     // Disable interrupts while mutating the task list to avoid races
     asm volatile ("cli" ::: "memory");
 
-    // Clean up DEAD tasks in the circular list, including prev if it's dead
-    Task *iter_prev = nullptr;
-    Task *iter = task_list;
-    Task *start = task_list;
-    
-    // First pass: find iter_prev (task before prev in the circular list)
-    if (start) {
-        if (start == prev) {
-            // Find the last task in the list
-            Task *tmp = start;
-            while (tmp->next != start) tmp = tmp->next;
-            iter_prev = tmp;
-        } else {
-            while (iter != prev && iter->next != start) {
-                iter = iter->next;
-            }
-            iter_prev = iter;
-            iter = iter->next;
-        }
-    }
-
-    // Second pass: clean up DEAD tasks starting from prev
-    if (iter_prev && iter) {
-        Task *iter_start = iter;
+    // Clean up any DEAD tasks in the circular list, including current task
+    Task *freed_current = nullptr;
+    if (task_list) {
+        Task *iter = task_list;
+        Task *iter_prev = nullptr;
+        
+        // Find the previous task (last in circular list)
+        Task *tmp = task_list;
+        while (tmp->next != task_list) tmp = tmp->next;
+        iter_prev = tmp;
+        iter = task_list;
+        
+        // Scan for DEAD tasks
         do {
-            if (iter->state != TASK_DEAD) {
+            if (iter->state == TASK_DEAD) {
+                // Remove this DEAD task
+                iter_prev->next = iter->next;
+                if (iter == task_list) {
+                    task_list = iter->next;
+                }
+                if (iter == prev) {
+                    freed_current = prev;
+                }
+                log_info("scheduler: freeing dead task pid=%d", iter->pid);
+                if (iter->fds) fdtable_destroy(iter->fds, iter->fd_count);
+                if (iter->user_stack) hanacore::mem::kfree(iter->user_stack);
+                if (iter->kstack) hanacore::mem::kfree(iter->kstack);
+                hanacore::mem::kfree(iter);
+                iter = iter_prev->next;
+            } else {
                 iter_prev = iter;
                 iter = iter->next;
-                continue;
             }
-            Task *next_iter = iter->next;
-            iter_prev->next = next_iter;
-            if (iter == task_list) {
-                task_list = (next_iter == iter) ? nullptr : next_iter;
-            }
-            if (iter == prev) {
-                // The current task is being removed, set prev to the next one
-                prev = next_iter;
-            }
-            log_info("scheduler: freeing dead task pid=%d", iter->pid);
-            if (iter->fds) fdtable_destroy(iter->fds, iter->fd_count);
-            if (iter->user_stack) hanacore::mem::kfree(iter->user_stack);
-            if (iter->kstack) hanacore::mem::kfree(iter->kstack);
-            hanacore::mem::kfree(iter);
-            iter = next_iter;
-        } while (iter && iter != iter_start);
+        } while (iter != task_list && task_list);
     }
 
     // Re-enable interrupts after list mutation
     asm volatile ("sti" ::: "memory");
 
     // Find next runnable task
-    if (!task_list || !prev) {
-        log_info("scheduler: no task list or current task");
+    if (!task_list) {
+        log_info("scheduler: no tasks in list");
         return;
     }
 
-    Task *next = prev->next ? prev->next : prev;
+    // Debug: list all tasks
+    {
+        Task *debug_iter = task_list;
+        int count = 0;
+        do {
+            log_info("scheduler: task[%d] pid=%d state=%d", count++, debug_iter->pid, debug_iter->state);
+            debug_iter = debug_iter->next;
+            if (count > 10) break; // Safety: prevent infinite loop in logging
+        } while (debug_iter && debug_iter != task_list);
+    }
+
+    // Sanity check: ensure at least one READY/RUNNING task exists
+    {
+        Task *debug_iter = task_list;
+        int found_runnable = 0, count = 0;
+        do {
+            if (debug_iter->state == TASK_READY || debug_iter->state == TASK_RUNNING) found_runnable++;
+            debug_iter = debug_iter->next;
+            if (++count > 10) break;
+        } while (debug_iter && debug_iter != task_list);
+        if (!found_runnable) log_info("scheduler: SANITY CHECK FAILED: no READY/RUNNING tasks in list!");
+    }
+
+    Task *next = nullptr;
+    if (freed_current) {
+        // The current task was freed, so start from task_list
+        next = task_list;
+    } else {
+        // Normal case: start from prev->next
+        next = prev->next ? prev->next : prev;
+    }
+    
     Task *probe_start = next;
     do {
-        if (next->state == TASK_READY || next->state == TASK_RUNNING) break;
-        next = next->next ? next->next : prev;
-    } while (next != probe_start);
+        if (next && (next->state == TASK_READY || next->state == TASK_RUNNING)) break;
+        if (next) next = next->next ? next->next : prev;
+        else break;
+    } while (next && next != probe_start);
 
-    if (next->state != TASK_READY && next->state != TASK_RUNNING) {
-        log_info("scheduler: no runnable tasks found in list");
+    if (!next || (next->state != TASK_READY && next->state != TASK_RUNNING)) {
+        log_info("scheduler: no runnable tasks found in list (prev pid=%d state=%d)", prev->pid, prev->state);
         return;
     }
 
@@ -372,4 +401,24 @@ Task* find_task_by_pid(int pid) {
     return nullptr;
 }
 
+void kill_task(int pid) {
+    Task* t = find_task_by_pid(pid);
+    if (t && t->state != TASK_DEAD) {
+        t->state = TASK_DEAD;
+        log_info("scheduler: killed task pid=%d", pid);
+    }
+}
+
+void wait_task(int pid) {
+    // Poll until task dies or is not found
+    while (true) {
+        Task* t = find_task_by_pid(pid);
+        if (!t || t->state == TASK_DEAD) break;
+        
+        // Explicitly call schedule_next to let other tasks run
+        schedule_next();
+    }
+}
+
 } // namespace hanacore::scheduler
+

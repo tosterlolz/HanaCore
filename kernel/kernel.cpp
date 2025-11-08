@@ -11,8 +11,12 @@
 #include "filesystem/vfs.hpp"
 #include "filesystem/procfs.hpp"
 #include "filesystem/devfs.hpp"
+#include "filesystem/isofs.hpp"
+#include "filesystem/floppy.hpp"
 #include "scheduler/scheduler.hpp"
 #include "shell/shell.hpp"
+#include "shell/login.hpp"
+#include "userland/users.hpp"
 #include "mem/heap.hpp"
 #include "userland/elf_loader.hpp"
 #include "utils/utils.hpp"
@@ -77,15 +81,77 @@ extern "C" void kernel_main() {
     log_ok("Core subsystems initialized");
     log_info("Build: %s | Version: %s", hanacore::utils::build_date, hanacore::utils::version);
 
+    // Initialize all filesystems
     ::vfs_init();
     hanacore::fs::hanafs_init();
     hanacore::fs::procfs_init();
     hanacore::fs::devfs_init();
-    fat32_mount_all_letter_modules();
-
+    hanacore::fs::isofs_init();
+    
+    // Try to mount rootfs from modules (floppy or FAT32)
+    bool rootfs_mounted = false;
+    
     if (module_request.response) {
         auto resp = module_request.response;
         log_info("Limine modules detected: %u", (unsigned)resp->module_count);
+        
+        for (uint64_t i = 0; i < resp->module_count; ++i) {
+            auto mod = resp->modules[i];
+            const char* path = (const char*)(uintptr_t)mod->path;
+            if (path && limine_hhdm_request.response) {
+                uint64_t off = limine_hhdm_request.response->offset;
+                if ((uint64_t)path < off) path = (const char*)((uintptr_t)path + off);
+            }
+            
+            log_info("Module %u: %s (size=%u bytes)", (unsigned)i, path ? path : "(null)", (unsigned)mod->size);
+            
+            // Check for rootfs image (.img) - try floppy first
+            if (!rootfs_mounted && path && (ends_with(path, ".img") || ends_with(path, "rootfs"))) {
+                void* addr = mod->address;
+                if (limine_hhdm_request.response) {
+                    uint64_t off = limine_hhdm_request.response->offset;
+                    if ((uintptr_t)addr < off) addr = (void*)((uintptr_t)addr + off);
+                }
+                
+                // Try floppy first (FAT12/FAT16)
+                if (hanacore::fs::floppy_init_from_memory(addr, mod->size) == 0) {
+                    log_ok("Mounted floppy image at / (%s)", path);
+                    rootfs_mounted = true;
+                } 
+                // If floppy fails, try FAT32
+                else if (hanacore::fs::fat32_init_from_memory(addr, mod->size) == 0) {
+                    hanacore::fs::register_mount("fat32", "/");
+                    log_ok("Mounted FAT32 image at / (%s)", path);
+                    rootfs_mounted = true;
+                } else {
+                    log_fail("Failed to mount rootfs image (%s)", path);
+                }
+            }
+            
+            // Check for ISO images
+            if (path && (ends_with(path, ".iso") || ends_with(path, "HanaCore.iso"))) {
+                void* addr = mod->address;
+                if (limine_hhdm_request.response) {
+                    uint64_t off = limine_hhdm_request.response->offset;
+                    if ((uintptr_t)addr < off) addr = (void*)((uintptr_t)addr + off);
+                }
+                
+                if (hanacore::fs::isofs_init_from_memory(addr, mod->size) == 0) {
+                    hanacore::fs::register_mount("isofs", "/iso");
+                    log_ok("Mounted ISO image at /iso");
+                }
+            }
+        }
+    }
+    
+    // Fallback to ATA if no module rootfs was found
+    if (!rootfs_mounted) {
+        log_info("No rootfs module found, attempting FAT32 from ATA");
+        fat32_mount_all_letter_modules();
+    }
+
+    if (module_request.response) {
+        auto resp = module_request.response;
         for (uint64_t i = 0; i < resp->module_count; ++i) {
             auto mod = resp->modules[i];
             const char* path = (const char*)(uintptr_t)mod->path;
@@ -135,10 +201,13 @@ extern "C" void kernel_main() {
         hanacore::mem::kfree(filedata);
     }
 
-    log_info("No user shell found, starting built-in shell");
-    int shell_pid = hanacore::scheduler::create_task((void(*)(void))hanacore::shell::shell_main);
-    log_info("Created built-in shell task (pid=%d)", shell_pid);
+    log_info("No user shell found, starting login");
+    int login_pid = hanacore::scheduler::create_task((void(*)(void))hanacore::shell::login_main);
+    log_info("Created login task (pid=%d)", login_pid);
 
+    // Block the main kernel task so it won't be selected by the scheduler
+    hanacore::scheduler::current_task->state = hanacore::scheduler::TASK_BLOCKED;
+    
     hanacore::scheduler::schedule_next();
 
     log_fail("No tasks left to run, halting");
