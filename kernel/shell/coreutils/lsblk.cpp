@@ -1,8 +1,6 @@
-#include "../../drivers/ide.hpp"
-#include "../../filesystem/ext3.hpp"
 #include "../../filesystem/vfs.hpp"
-#include "../../filesystem/fat32.hpp"
-#include "../../filesystem/hanafs.hpp"
+#include "../../filesystem/devfs.hpp"
+#include "../../filesystem/vfs.hpp"
 #include "../../libs/libc.h"
 #include <stddef.h>
 #include <string.h>
@@ -14,18 +12,18 @@ extern "C" void print(const char*);
 // then prints known mounts from VFS/FAT32/HanaFS. This shows unmounted
 // devices and a readable mounts section.
 
-struct StringList { const char* items[64]; int count; };
-
-static void collect_dev_cb(const char* name, void* ctx) {
-    if (!name || !ctx) return;
-    StringList* list = (StringList*)ctx;
-    if (list->count < 64) list->items[list->count++] = name;
+static void print_dev_entry(const char* name) {
+    if (!name) return;
+    // Print a simple, safe device name line to avoid complex formatting
+    print(name);
+    print("\n");
 }
 
-static void collect_mount_cb(const char* line, void* ctx) {
-    if (!line || !ctx) return;
-    StringList* list = (StringList*)ctx;
-    if (list->count < 64) list->items[list->count++] = line;
+static void print_mount_line(const char* line) {
+    if (!line) return;
+    print(" ");
+    print(line);
+    print("\n");
 }
 
 extern "C" void builtin_lsblk_cmd(const char* unused) {
@@ -33,29 +31,12 @@ extern "C" void builtin_lsblk_cmd(const char* unused) {
     // Header
     print("NAME        MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS\n");
 
-    // Collect device node names from /dev via VFS
-    StringList devs; devs.count = 0;
-    hanacore::fs::vfs_list_dir("/dev", [](const char* name){
-        // vfs_list_dir expects a callback 'void (*cb)(const char*)' so use a
-        // small trampoline that appends into our static StringList via a
-        // temporary global — to avoid introducing globals we instead call
-        // a helper that prints directly. Simpler: print device entries
-        // directly here by reusing print().
-        char buf[128];
-        // NAME, MAJ:MIN, RM, SIZE, RO, TYPE
-        snprintf(buf, sizeof(buf), "%-11s %5s %2s %6s %2s %4s\n", name, "0:0", "0", "unknown", "0", "disk");
-        print(buf);
-    });
+    // Collect device node names from the pseudo `devfs` (no raw ATA probing)
+    hanacore::fs::devfs_list_dir("/dev", print_dev_entry);
 
-    // Now print mounted filesystems collected from VFS/FAT32/HanaFS
+    // Now print mounted filesystems collected from the VFS registry only
+    // (avoid directly calling backend-specific mount enumerators here to
+    // reduce risk of invoking complex backend code while listing).
     print("\nMOUNTPOINTS:\n");
-    // VFS mounts
-    hanacore::fs::vfs_list_mounts([](const char* line){ if (line) { print(" "); print(line); print("\n"); } });
-    // FAT32 mounts
-    hanacore::fs::fat32_list_mounts([](const char* line){ if (line) { print(" "); print(line); print("\n"); } });
-    // HanaFS mounts
-    hanacore::fs::hanafs_list_mounts([](const char* line){ if (line) { print(" "); print(line); print("\n"); } });
-
-    // If no mounts, say so
-    // (vfs_list_mounts prints nothing if none)
+    hanacore::fs::vfs_list_mounts(print_mount_line);
 }

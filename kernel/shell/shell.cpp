@@ -354,22 +354,12 @@ namespace hanacore {
 
                     if (strcmp(cmd, "ls") == 0) { char path[256]; build_path(path, sizeof(path), arg); builtin_ls_cmd(path); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "lsblk") == 0) {
-                        auto lsblk_task = [](void* a)->void {
-                            const char* s = (const char*)a;
-                            builtin_lsblk_cmd(s);
-                            if (a) hanacore::mem::kfree(a);
-                        };
-                        void* argcopy = NULL;
-                        if (arg && *arg) {
-                            size_t n = 0; while (arg[n]) ++n; ++n;
-                            argcopy = (void*)hanacore::mem::kmalloc(n);
-                            if (argcopy) {
-                                for (size_t i = 0; i < n; ++i) ((char*)argcopy)[i] = arg[i];
-                            }
-                        }
-                        // create task and yield so the new task can run
-                        hanacore::scheduler::create_task_with_arg((void(*)(void*))lsblk_task, argcopy);
-                        hanacore::scheduler::sched_yield();
+                        // Use the registered builtin spawn path which ensures the
+                        // created task cleans itself up correctly (shell_builtin_wrapper).
+                        spawn_registered_cmd("lsblk", arg);
+                        // Do not yield here: spawn the task and return to the shell
+                        // prompt immediately. The scheduler will run the new task
+                        // when it gets CPU time.
                         pos=0; print_prompt(); continue;
                     }
                     if (strcmp(cmd, "format") == 0) { builtin_format_cmd(arg); pos=0; print_prompt(); continue; }
@@ -385,20 +375,21 @@ namespace hanacore {
             		if (strcmp(cmd, "echo") == 0) { if(arg && *arg) tty_write(arg); tty_write("\n"); pos=0; print_prompt(); continue; }
 					if (strcmp(cmd, "help") == 0) {
 						print("HanaShell built-in commands:\n");
-						print("  cd <path>        Change directory\n");
-						print("  ls [path]       List directory contents\n");
-						print("  lsblk           List block devices\n");
-						print("  format <dev>    Format device (e.g., 0:)\n");
-						print("  install <src>   Install OS from FAT32 path\n");
-						print("  mkdir <path>    Create directory\n");
-						print("  rmdir <path>    Remove directory\n");
-                        print("  touch <file>    Create empty file\n");
-                        print("  rm <file>       Remove file\n");
-                        print("  cat <file>      Print file contents\n");
-						print("  pwd             Print working directory\n");
-						print("  clear           Clear the screen\n");
-						print("  echo <text>     Print text to console\n");
-						print("  help            Show this help message\n"); pos=0; print_prompt(); continue;
+						print("  cd <path>          Change directory\n");
+						print("  ls [path]          List directory contents\n");
+						print("  lsblk              List block devices\n");
+						print("  format <dev>       Format device (e.g., 0:)\n");
+						print("  install <src>      Install OS from FAT32 path\n");
+						print("  mkdir <path>       Create directory\n");
+						print("  rmdir <path>       Remove directory\n");
+                        print("  touch <file>       Create empty file\n");
+                        print("  rm <file>          Remove file\n");
+                        print("  cat <file>         Print file contents\n");
+						print("  pwd                Print working directory\n");
+						print("  clear              Clear the screen\n");
+						print("  echo <text>        Print text to console\n");
+                        print("  mount <src> <dst>  Mount filesystem from source to destination\n");
+						print("  help               Show this help message\n"); pos=0; print_prompt(); continue;
 					}
 
 

@@ -72,10 +72,10 @@ namespace hanacore { namespace fs {
                 // specific listing handlers so they can provide dynamic
                 // entries instead of falling back to HanaFS.
                 if (strcmp(fsname, "procfs") == 0) {
-                    return hanacore::fs::procfs_list_dir(path, cb);
+                    return hanacore::fs::procfs_list_dir(rel, cb);
                 }
                 if (strcmp(fsname, "devfs") == 0) {
-                    return hanacore::fs::devfs_list_dir(path, cb);
+                    return hanacore::fs::devfs_list_dir(rel, cb);
                 }
             }
         }
@@ -217,11 +217,11 @@ namespace hanacore { namespace fs {
                     return NULL;
                 }
                 if (strcmp(fsname, "procfs") == 0) {
-                    data = hanacore::fs::procfs_get_file_alloc(path, out_len);
+                        data = hanacore::fs::procfs_get_file_alloc(rel, out_len);
                     return data;
                 }
                 if (strcmp(fsname, "devfs") == 0) {
-                    data = hanacore::fs::devfs_get_file_alloc(path, out_len);
+                        data = hanacore::fs::devfs_get_file_alloc(rel, out_len);
                     return data;
                 }
             }

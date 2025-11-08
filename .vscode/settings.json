@@ -8,6 +8,7 @@
         "cstdint": "cpp",
         "stdint.h": "c",
         "sstream": "cpp",
-        "cstdarg": "cpp"
+        "cstdarg": "cpp",
+        "cstdio": "c"
     }
 }
