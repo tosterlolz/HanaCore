@@ -1,6 +1,6 @@
 #include "module_runner.hpp"
 #include "elf_loader.hpp"
-#include "../../boot/limine.h"
+#include "../boot/limine.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "../utils/logger.hpp"

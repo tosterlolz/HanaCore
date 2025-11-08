@@ -1,85 +1,107 @@
-# Kernel build
 cmake_minimum_required(VERSION 3.16)
-project(kernel LANGUAGES C CXX ASM)
+project(HanaCoreKernel LANGUAGES C CXX ASM)
 
+# ----------------------------------------
+# C++20 freestanding kernel with coroutines
+# ----------------------------------------
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# ----------------------------------------
 # Collect sources
+# ----------------------------------------
 file(GLOB_RECURSE KERNEL_CPP_SRCS
-  "${CMAKE_SOURCE_DIR}/kernel/*.cpp"
-  "${CMAKE_SOURCE_DIR}/kernel/**/*.cpp"
+        "${CMAKE_SOURCE_DIR}/kernel/*.cpp"
+        "${CMAKE_SOURCE_DIR}/kernel/**/*.cpp"
 )
 file(GLOB_RECURSE KERNEL_C_SRCS
-  "${CMAKE_SOURCE_DIR}/kernel/*.c"
-  "${CMAKE_SOURCE_DIR}/kernel/**/*.c"
+        "${CMAKE_SOURCE_DIR}/kernel/*.c"
+        "${CMAKE_SOURCE_DIR}/kernel/**/*.c"
 )
 file(GLOB_RECURSE KERNEL_ASM_SRCS
-  "${CMAKE_SOURCE_DIR}/kernel/*.S"
-  "${CMAKE_SOURCE_DIR}/kernel/**/*.S"
+        "${CMAKE_SOURCE_DIR}/kernel/*.S"
+        "${CMAKE_SOURCE_DIR}/kernel/**/*.S"
 )
 
-# Additional non-kernel sources the justfile compiled into the kernel
 set(EXTRA_C_SRCS
-  ${CMAKE_SOURCE_DIR}/boot/limine_entry.c
-  ${CMAKE_SOURCE_DIR}/flanterm/src/flanterm.c
-  ${CMAKE_SOURCE_DIR}/flanterm/src/flanterm_backends/fb.c
-  ${CMAKE_SOURCE_DIR}/kernel/libs/libc.c
-  ${CMAKE_SOURCE_DIR}/kernel/shell/shell.cpp
-  ${CMAKE_SOURCE_DIR}/kernel/scheduler/scheduler.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../flanterm/src/flanterm.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../flanterm/src/flanterm_backends/fb.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/boot/limine_entry.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/libs/libc.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/shell/shell.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/scheduler/scheduler.cpp
 )
+
 
 set(KERNEL_SRCS ${KERNEL_CPP_SRCS} ${KERNEL_C_SRCS} ${KERNEL_ASM_SRCS} ${EXTRA_C_SRCS})
 
-# Exclude networking sources so this build has no networking subsystem.
-# We keep the source files in the repo for history, but stop compiling them
-# and remove related drivers (PCI/virtio) from the kernel target.
-file(GLOB_RECURSE KERNEL_NET_SRCS
-  "${CMAKE_SOURCE_DIR}/kernel/net/*.cpp"
-  "${CMAKE_SOURCE_DIR}/kernel/net/*.c"
+# Exclude any generated build artifacts that may live inside the source tree
+# (for example an in-source `kernel/build` from a previous run). These
+# can contain CMake-generated CompilerId sources which must not be
+# compiled into the kernel executable.
+list(FILTER KERNEL_SRCS EXCLUDE REGEX ".*/kernel/build/.*")
+list(FILTER KERNEL_SRCS EXCLUDE REGEX ".*/build/cmake/.*")
+
+# Exclude redundant assembly files
+list(REMOVE_ITEM KERNEL_SRCS
+        "${CMAKE_SOURCE_DIR}/kernel/arch/gdt_reload.S"
+        "${CMAKE_SOURCE_DIR}/kernel/arch/isr_common.S"
 )
-list(REMOVE_ITEM KERNEL_SRCS ${KERNEL_NET_SRCS})
-# Exclude PCI/virtio driver sources that belong to networking
-list(REMOVE_ITEM KERNEL_SRCS "${CMAKE_SOURCE_DIR}/kernel/drivers/pci.cpp" "${CMAKE_SOURCE_DIR}/kernel/drivers/virtio.cpp")
 
-# Exclude certain assembly stubs that have C implementations to avoid duplicate symbols
-list(REMOVE_ITEM KERNEL_SRCS "${CMAKE_SOURCE_DIR}/kernel/arch/gdt_reload.S")
-list(REMOVE_ITEM KERNEL_SRCS "${CMAKE_SOURCE_DIR}/kernel/arch/isr_common.S")
-
+# ----------------------------------------
+# Define executable
+# ----------------------------------------
 add_executable(kernel ${KERNEL_SRCS})
 
-# mkrootfs target will still be built by the top-level project when creating the
-# ISO; we no longer embed the rootfs into the kernel, so don't generate a C
-# array or add it to kernel sources here.
-
-# Place output at top-level build directory and name it kernel.elf
 set_target_properties(kernel PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
-  OUTPUT_NAME "kernel.elf"
-  LINKER_LANGUAGE CXX
-  POSITION_INDEPENDENT_CODE OFF
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+        OUTPUT_NAME "kernel.elf"
+        LINKER_LANGUAGE CXX
+        POSITION_INDEPENDENT_CODE OFF
 )
 
+# ----------------------------------------
 # Common compile options
+# ----------------------------------------
 target_compile_options(kernel PRIVATE
-  -ffreestanding
-  -mcmodel=kernel
-  -mno-red-zone
-  -fno-stack-protector
-  -fno-pie
-  -fno-pic
+        -ffreestanding
+        -mcmodel=kernel
+        -mno-red-zone
+        -fno-stack-protector
+        -fno-pie
+        -fno-pic
+        -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 )
 
-# C++ specific options
-target_compile_options(kernel PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-fno-exceptions> $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-fno-rtti>)
+# ----------------------------------------
+# C++ specific options (for freestanding + coroutines)
+# ----------------------------------------
+target_compile_options(kernel PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:
+        -fno-exceptions
+        -fno-rtti
+        -fno-threadsafe-statics
+        -fno-use-cxa-atexit
+        -fcoroutines
+        >
+)
 
-# Link options: pass linker script and ensure ELF format
+# ----------------------------------------
+# Linker options
+# ----------------------------------------
 target_link_options(kernel PRIVATE
-  -nostdlib
-  -Wl,-m,elf_x86_64
-  -Wl,-T,${CMAKE_SOURCE_DIR}/linker.ld
-  -no-pie
+        -nostdlib
+        -Wl,-m,elf_x86_64
+        -Wl,-T,${CMAKE_SOURCE_DIR}/linker.ld
+        -no-pie
 )
 
+# ----------------------------------------
+# Post-build: copy kernel into ISO tree
+# ----------------------------------------
 add_custom_command(TARGET kernel POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/iso_root/boot
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:kernel> ${CMAKE_BINARY_DIR}/iso_root/boot/kernel
-  COMMENT "Copy kernel.elf into iso_root/boot"
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/iso_root/boot
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:kernel> ${CMAKE_BINARY_DIR}/iso_root/boot/kernel
+        COMMENT "📦 Copied kernel.elf into iso_root/boot"
 )

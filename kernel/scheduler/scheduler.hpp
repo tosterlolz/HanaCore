@@ -33,6 +33,9 @@ extern Task *task_list;
 // Scheduler API
 void init_scheduler();
 int create_task(void (*entry)(void));
+// Create a task with a void* argument passed to the entry function. The
+// entry must have the signature void (*)(void*).
+int create_task_with_arg(void (*entry)(void*), void* arg);
 void sched_yield();
 void schedule_next();
 int sched_getpid();

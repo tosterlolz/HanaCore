@@ -45,6 +45,12 @@ extern "C" void builtin_lsblk_cmd(const char* unused) {
         int r = ata_read_sector_drive(1, 16, sec);
         if (r == 0 && memcmp(&sec[1], "CD001", 5) == 0) {
             print("ATA slave: ISO9660 media detected (CD-ROM)\n");
+            // Auto-mount the ISO contents into HanaFS under /drv1 so tools can see it
+            if (hanafs_mount_iso_drive(1, "/drv1") == 0) {
+                print("Mounted ISO on /drv1\n");
+            } else {
+                print("Failed to mount ISO on /drv1\n");
+            }
         } else {
             print("ATA slave: no device detected\n");
         }

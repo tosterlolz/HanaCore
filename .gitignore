@@ -41,3 +41,4 @@
 *.dwo
 build/
 CmakeFiles/
+rootfs_src/

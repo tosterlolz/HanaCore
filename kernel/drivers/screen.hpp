@@ -4,7 +4,7 @@
 #include <stdbool.h>
 
 /* Use the Limine-provided definitions for requests and responses. */
-#include "../../boot/limine.h"
+#include "../boot/limine.h"
 
 /*
  * Use the platform va_list provided by the C/C++ runtime.

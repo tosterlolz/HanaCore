@@ -66,8 +66,13 @@ extern "C" uint64_t syscall_dispatch(uint64_t num, uint64_t a, uint64_t b, uint6
             int flags = (int)b;
             if (!path) return (uint64_t)-1;
             // allocate fd in current task
-            // simple: read full file into buffer if exists, else create empty for O_CREAT
+            // simple: read full file into buffer if exists
             size_t len = 0; void* data = hanacore::fs::hanafs_get_file_alloc(path, &len);
+            // If file does not exist and O_CREAT specified, create empty file
+            if (!data && (flags & HANA_O_CREAT)) {
+                hanacore::fs::hanafs_create_file(path);
+                // leave data==NULL and len==0 -> empty file
+            }
             // find fd using current task
             hanacore::scheduler::Task* cur = hanacore::scheduler::current_task;
             if (!cur || !cur->fds) { if (data) hanacore::mem::kfree(data); return (uint64_t)-1; }
@@ -85,7 +90,14 @@ extern "C" uint64_t syscall_dispatch(uint64_t num, uint64_t a, uint64_t b, uint6
                 ent->buf = NULL; ent->len = 0;
                 if (data) hanacore::mem::kfree(data);
             }
-            ent->pos = 0;
+            // If O_TRUNC is specified, truncate file to zero length
+            if (ent->buf && (flags & HANA_O_TRUNC)) {
+                hanacore::mem::kfree(ent->buf);
+                ent->buf = NULL; ent->len = 0;
+            }
+            // If O_APPEND, start position at end
+            if (flags & HANA_O_APPEND) ent->pos = ent->len;
+            else ent->pos = 0;
             ent->flags = flags;
             return (uint64_t)fd;
         }

@@ -1,6 +1,7 @@
 #include "hanafs.hpp"
 #include "../api/hanaapi.h"
 #include "../mem/heap.hpp"
+#include "../drivers/ide.hpp"
 #include <string.h>
 #include "../utils/logger.hpp"
 #include "../libs/libc.h"
@@ -8,7 +9,9 @@
 // ATA helpers (provided by IDE driver). These are weak symbols defined in
 // filesystem/fat32.cpp as fallbacks; declare them here for use.
 extern "C" int ata_read_sector(uint32_t lba, void* buf);
-extern "C" int ata_write_sector(uint32_t lba, void* buf);
+extern "C" int ata_write_sector(uint32_t lba, const void* buf);
+extern "C" int ata_read_sector_drive(uint32_t drive, uint32_t lba, void* buf);
+extern "C" int32_t ata_get_sector_count_drive(int drive);
 
 // Very small in-memory filesystem implementation. Not thread-safe. Uses
 // simple linked-list of entries keyed by full path.
@@ -136,8 +139,8 @@ static void build_internal_path(const char* path, int drive, char* out, size_t o
 extern "C" int hanafs_init(void) {
     // create root entry
     if (g_head) return 0;
-    // attempt to load from ATA-backed image first; if this fails,
-    // fall back to creating an empty in-memory root.
+    // attempt to load from ATA-backed image first; if this succeeds,
+    // keep the loaded tree and do not create an additional /drv0 entry.
     if (hanafs_load_from_ata() == 0) {
         hanacore::utils::log_ok_cpp("[HanaFS] Loaded filesystem from ATA image");
         return 0;
@@ -151,8 +154,10 @@ extern "C" int hanafs_init(void) {
     root->next = NULL;
     g_head = root;
     // Ensure basic top-level directories exist for a consistent namespace
-    // when starting with an in-memory filesystem.
-    hanafs_make_dir("/drv0");
+    // when starting with an in-memory filesystem. Do NOT create `/drv0`
+    // unless an ATA-backed image was actually loaded or explicitly
+    // mounted; mapping root paths into /drv0 by default confused
+    // visible mount points.
     hanafs_make_dir("/bin");
     hanafs_make_dir("/dev");
     hanafs_make_dir("/home");
@@ -169,8 +174,10 @@ extern "C" int hanafs_write_file(const char* path, const void* buf, size_t len) 
     // support optional drive prefix like '0:/' and normalize; keep track of drive
     int drv = parse_drive_prefix_inplace(pbuf, psz);
     normalize_path_inplace(pbuf, psz);
-    // build internal storage path including drive namespace
-    char ipath[512]; build_internal_path(pbuf, drv < 0 ? 0 : drv, ipath, sizeof(ipath));
+    // build internal storage path including drive namespace (only when
+    // a drive prefix was provided). If drv < 0, build_internal_path will
+    // copy the path unchanged.
+    char ipath[512]; build_internal_path(pbuf, drv, ipath, sizeof(ipath));
 
     // remove existing
     HanaEntry* prev = NULL; HanaEntry* cur = g_head;
@@ -367,12 +374,38 @@ extern "C" int hanafs_list_mounts(void (*cb)(const char* line)) {
     char line[128];
     // If HanaFS was loaded from ATA persistence area, report it as mounted
     // on ATA master (drive 0). Otherwise report as in-memory (no drive).
+    // Report ATA-backed image for drive 0 when loaded.
     if (g_loaded_from_ata) {
         snprintf(line, sizeof(line), "HanaFS mount: [0: ATA image -> LBA=%u]", (unsigned)HANAFS_PERSIST_LBA);
+        cb(line);
     } else {
         snprintf(line, sizeof(line), "HanaFS mount: [in-memory]");
+        cb(line);
     }
-    cb(line);
+
+    // Additionally, enumerate any `/drvN` namespaces that exist in the
+    // in-memory tree so tools like lsblk can display per-drive mounts
+    // (for example, /drv1 for a CD-ROM that was mounted).
+    // Build a small bitmap of seen drive numbers (0-9 supported here).
+    int seen[10] = {0,0,0,0,0,0,0,0,0,0};
+    for (HanaEntry* e = g_head; e; e = e->next) {
+        if (!e->path) continue;
+        if (strncmp(e->path, "/drv", 4) == 0) {
+            // expect "/drvN" where N is a digit
+            if (e->path[4] >= '0' && e->path[4] <= '9') {
+                int d = e->path[4] - '0';
+                if (!seen[d]) {
+                    seen[d] = 1;
+                    // produce a friendly line; for drive 0 we already
+                    // reported the ATA image above, so skip duplicate.
+                    if (d == 0) continue;
+                    snprintf(line, sizeof(line), "HanaFS mount: [/drv%d]", d);
+                    // For simplicity just show the mount point and drive number.
+                    cb(line);
+                }
+            }
+        }
+    }
     return 0;
 }
 
@@ -387,10 +420,11 @@ extern "C" void* hanafs_get_file_alloc(const char* path, size_t* out_len) {
     for (size_t i = 0; i < psz-1; ++i) pbuf[i] = path[i]; pbuf[psz-1] = '\0';
     int drv = parse_drive_prefix_inplace(pbuf, psz);
     normalize_path_inplace(pbuf, psz);
-    char ipath[512]; build_internal_path(pbuf, drv < 0 ? 0 : drv, ipath, sizeof(ipath));
+    char ipath[512]; build_internal_path(pbuf, drv, ipath, sizeof(ipath));
     HanaEntry* e = find_entry(ipath);
-    // fallback to legacy (no /drvN prefix) for drive 0
-    if (!e && (drv <= 0)) e = find_entry(pbuf);
+    // do not implicitly fall back to /drv0 for bare paths; callers
+    // should explicitly reference `0:/` when they want ATA-backed
+    // drive contents. This keeps mount points distinct.
     if (!e || e->is_dir) return NULL;
     size_t n = e->len ? e->len : 0;
     void* buf = hanacore::mem::kmalloc(n ? n : 1);
@@ -416,7 +450,7 @@ extern "C" int hanafs_list_dir(const char* path, void (*cb)(const char* name)) {
     drv = parse_drive_prefix_inplace(pbuf, psz);
     normalize_path_inplace(pbuf, psz);
     size_t plen = strlen(pbuf);
-    char ipath[512]; build_internal_path(pbuf, drv < 0 ? 0 : drv, ipath, sizeof(ipath));
+    char ipath[512]; build_internal_path(pbuf, drv, ipath, sizeof(ipath));
     size_t iplen = strlen(ipath);
     // iterate entries and find immediate children for either internal namespace
     // or legacy (no-drive) namespace when appropriate.
@@ -427,8 +461,10 @@ extern "C" int hanafs_list_dir(const char* path, void (*cb)(const char* name)) {
             // internal match
             candidate = e->path + iplen;
             cand_len = strlen(e->path) - iplen;
-        } else if (drv <= 0 && strncmp(e->path, pbuf, plen) == 0) {
-            // legacy match allowed for drive 0
+        }
+        else if (drv < 0 && strncmp(e->path, pbuf, plen) == 0) {
+            // legacy (no-drive) match when the caller did not specify a
+            // drive prefix.
             candidate = e->path + plen;
             cand_len = strlen(e->path) - plen;
         } else {
@@ -451,7 +487,7 @@ extern "C" struct hana_dir* hanafs_opendir(const char* path) {
     for (size_t i = 0; i < psz-1; ++i) pbuf[i] = path[i]; pbuf[psz-1] = '\0';
     int drv = parse_drive_prefix_inplace(pbuf, psz);
     normalize_path_inplace(pbuf, psz);
-    char ipath[512]; build_internal_path(pbuf, drv < 0 ? 0 : drv, ipath, sizeof(ipath));
+    char ipath[512]; build_internal_path(pbuf, drv, ipath, sizeof(ipath));
     HanaDirObj* d = (HanaDirObj*)hanacore::mem::kmalloc(sizeof(HanaDirObj));
     if (!d) { hanacore::mem::kfree(pbuf); return NULL; }
     d->ipath = strdup_k(ipath);
@@ -501,7 +537,7 @@ extern "C" int hanafs_unlink(const char* path) {
     char ipath[512]; build_internal_path(pbuf, drv < 0 ? 0 : drv, ipath, sizeof(ipath));
     HanaEntry* prev = NULL; HanaEntry* cur = g_head;
     while (cur) {
-        if (strcmp(cur->path, ipath) == 0 || (drv <= 0 && strcmp(cur->path, pbuf) == 0)) {
+        if (strcmp(cur->path, ipath) == 0 || (drv < 0 && strcmp(cur->path, pbuf) == 0)) {
             remove_entry_node(prev, cur);
             // persist updated state
             if (hanafs_persist_to_ata() == 0) {
@@ -528,7 +564,7 @@ extern "C" int hanafs_make_dir(const char* path) {
     int drv = parse_drive_prefix_inplace(pbuf, psz);
     normalize_path_inplace(pbuf, psz);
     char ipath[512]; build_internal_path(pbuf, drv < 0 ? 0 : drv, ipath, sizeof(ipath));
-    if (find_entry(ipath) || (drv <= 0 && find_entry(pbuf))) { hanacore::mem::kfree(pbuf); return -1; }
+    if (find_entry(ipath) || (drv < 0 && find_entry(pbuf))) { hanacore::mem::kfree(pbuf); return -1; }
     HanaEntry* e = (HanaEntry*)hanacore::mem::kmalloc(sizeof(HanaEntry));
     if (!e) { hanacore::mem::kfree(pbuf); return -1; }
     memset(e, 0, sizeof(HanaEntry));
@@ -573,9 +609,9 @@ extern "C" int hanafs_stat(const char* path, struct hana_stat* st) {
     for (size_t i = 0; i < psz-1; ++i) pbuf[i] = path[i]; pbuf[psz-1] = '\0';
     int drv = parse_drive_prefix_inplace(pbuf, psz);
     normalize_path_inplace(pbuf, psz);
-    char ipath[512]; build_internal_path(pbuf, drv < 0 ? 0 : drv, ipath, sizeof(ipath));
+    char ipath[512]; build_internal_path(pbuf, drv, ipath, sizeof(ipath));
     HanaEntry* e = find_entry(ipath);
-    if (!e && drv <= 0) e = find_entry(pbuf);
+    if (!e && drv < 0) e = find_entry(pbuf);
     if (!e) { hanacore::mem::kfree(pbuf); return -1; }
     // Fill a minimal hana_stat
     memset(st, 0, sizeof(*st));
@@ -587,6 +623,84 @@ extern "C" int hanafs_stat(const char* path, struct hana_stat* st) {
     st->st_mtime_ns = 0; st->st_atime_ns = 0; st->st_ctime_ns = 0;
     hanacore::mem::kfree(pbuf);
     return 0;
+}
+
+// Minimal ISO9660 mount support: mount CD-ROM contents into HanaFS under
+// a given mount point (e.g., "/drv1"). This lightweight reader supports
+// the primary volume descriptor and directory records (basic subset).
+static uint32_t le32(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void parse_iso_dir_recursive(int drive, uint32_t lba, uint32_t size, const char* mount_prefix);
+
+extern "C" int hanafs_mount_iso_drive(int drive, const char* mount_point) {
+    if (!mount_point) return -1;
+    uint8_t sec[512];
+    // Primary Volume Descriptor is at sector 16
+    if (ata_read_sector_drive(drive, 16, sec) != 0) return -1;
+    if (memcmp(&sec[1], "CD001", 5) != 0) return -1;
+    const uint8_t* rr = sec + 156; // root dir record
+    uint32_t root_lba = le32(rr + 2);
+    uint32_t root_size = le32(rr + 10);
+    // Create mount point directory
+    hanacore::fs::hanafs_make_dir(mount_point);
+    // Recursively parse and populate HanaFS
+    parse_iso_dir_recursive(drive, root_lba, root_size, mount_point);
+    return 0;
+}
+
+static void make_path_join(char* out, size_t out_sz, const char* base, const char* name) {
+    size_t b = 0; while (b + 1 < out_sz && base[b]) { out[b] = base[b]; ++b; }
+    if (b == 0 || out[b-1] != '/') {
+        if (b + 1 < out_sz) out[b++] = '/';
+    }
+    size_t i = 0; while (b + i + 1 < out_sz && name[i]) { out[b + i] = name[i]; ++i; }
+    out[b + i] = '\0';
+}
+
+static void parse_iso_dir_recursive(int drive, uint32_t lba, uint32_t size, const char* mount_prefix) {
+    if (size == 0) return;
+    uint8_t* buf = (uint8_t*)hanacore::mem::kmalloc(size);
+    if (!buf) return;
+    uint32_t sectors = (size + 511) / 512;
+    for (uint32_t i = 0; i < sectors; ++i) {
+        if (ata_read_sector_drive(drive, lba + i, buf + i*512) != 0) { hanacore::mem::kfree(buf); return; }
+    }
+    uint32_t off = 0;
+    while (off < size) {
+        uint8_t len = buf[off];
+        if (len == 0) { uint32_t next = ((off / 512) + 1) * 512; off = next; continue; }
+        const uint8_t* r = buf + off;
+        uint32_t rec_lba = le32(r + 2);
+        uint32_t rec_size = le32(r + 10);
+        uint8_t name_len = r[32];
+        const char* name_ptr = (const char*)(r + 33);
+        if (name_len == 1 && (uint8_t)name_ptr[0] <= 1) { off += len; continue; }
+        char name[256]; size_t ni = 0;
+        for (uint8_t j = 0; j < name_len && ni + 1 < sizeof(name); ++j) {
+            char ch = name_ptr[j]; if (ch == ';') break; name[ni++] = ch;
+        }
+        name[ni] = '\0';
+        uint8_t flags = r[25];
+        char path[512]; make_path_join(path, sizeof(path), mount_prefix, name);
+        if (flags & 0x02) {
+            hanacore::fs::hanafs_make_dir(path);
+            parse_iso_dir_recursive(drive, rec_lba, rec_size, path);
+        } else {
+            uint8_t* fbuf = (uint8_t*)hanacore::mem::kmalloc(rec_size ? rec_size : 1);
+            if (fbuf) {
+                uint32_t fsectors = (rec_size + 511) / 512;
+                for (uint32_t si = 0; si < fsectors; ++si) {
+                    if (ata_read_sector_drive(drive, rec_lba + si, fbuf + si*512) != 0) break;
+                }
+                hanacore::fs::hanafs_write_file(path, fbuf, rec_size);
+                hanacore::mem::kfree(fbuf);
+            }
+        }
+        off += len;
+    }
+    hanacore::mem::kfree(buf);
 }
 
 // C++ namespace wrappers so callers can use hanacore::fs::hanafs_* APIs.

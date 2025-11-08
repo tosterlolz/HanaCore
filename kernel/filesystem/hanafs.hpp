@@ -48,6 +48,9 @@ extern "C" {
     int hanafs_load_from_ata(void);
     int hanafs_list_mounts(void (*cb)(const char* line));
     int hanafs_format_ata_master(int drive_number);
+    int hanafs_mount_iso_drive(int drive, const char* mount_point);
+    int hanafs_mount_iso_drive(int drive, const char* mount_point);
+    int hanafs_mount_iso_drive(int drive, const char* mount_point);
     int hanafs_stat(const char* path, struct hana_stat* st);
     hana_dir_t* hanafs_opendir(const char* path);
     hana_dirent* hanafs_readdir(hana_dir_t* dir);
