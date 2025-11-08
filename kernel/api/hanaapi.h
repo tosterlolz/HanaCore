@@ -87,7 +87,7 @@ int hana_stat(const char *path, struct hana_stat *st);
 int hana_fstat(hana_fd_t fd, struct hana_stat *st);
 
 /* Directory iteration */
-typedef struct {
+typedef struct hana_dirent {
     uint64_t d_ino;
     uint8_t d_type;
     char d_name[256];

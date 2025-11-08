@@ -206,6 +206,27 @@ extern "C" uint64_t syscall_dispatch(uint64_t num, uint64_t a, uint64_t b, uint6
             return 0;
         }
 
+        case HANA_SYSCALL_OPENDIR: {
+            const char* path = (const char*)(uintptr_t)a;
+            if (!path) return (uint64_t)0;
+            struct hana_dir* d = ::hanafs_opendir(path);
+            return (uint64_t)(uintptr_t)d;
+        }
+
+        case HANA_SYSCALL_READDIR: {
+            struct hana_dir* d = (struct hana_dir*)(uintptr_t)a;
+            if (!d) return (uint64_t)0;
+            struct hana_dirent* ent = ::hanafs_readdir(d);
+            return (uint64_t)(uintptr_t)ent;
+        }
+
+        case HANA_SYSCALL_CLOSEDIR: {
+            struct hana_dir* d = (struct hana_dir*)(uintptr_t)a;
+            if (!d) return (uint64_t)-1;
+            int rc = ::hanafs_closedir(d);
+            return rc == 0 ? 0 : (uint64_t)-1;
+        }
+
         case HANA_SYSCALL_DUP2: {
             int oldfd = (int)a; int newfd = (int)b;
             hanacore::scheduler::Task* cur = hanacore::scheduler::current_task;

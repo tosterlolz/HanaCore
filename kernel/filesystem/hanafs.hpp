@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "../api/hanaapi.h"
+
 // HanaFS: a tiny in-memory filesystem for kernel use. Designed to be simple
 // and freestanding. This header exposes both C and C++ friendly APIs.
 
@@ -26,11 +28,9 @@ namespace hanacore { namespace fs {
     // Query metadata about a path. Fills a hana_stat structure (defined in ../api/hanaapi.h)
     int hanafs_stat(const char* path, struct hana_stat* st);
     // Directory iteration helpers (C wrappers)
-    struct hana_dir; // opaque
-    struct hana_dirent { uint64_t d_ino; uint8_t d_type; char d_name[256]; };
-    struct hana_dir* hanafs_opendir(const char* path);
-    struct hana_dirent* hanafs_readdir(struct hana_dir* dir);
-    int hanafs_closedir(struct hana_dir* dir);
+    hana_dir_t* hanafs_opendir(const char* path);
+    hana_dirent* hanafs_readdir(hana_dir_t* dir);
+    int hanafs_closedir(hana_dir_t* dir);
 } }
 #endif
 
@@ -49,9 +49,7 @@ extern "C" {
     int hanafs_list_mounts(void (*cb)(const char* line));
     int hanafs_format_ata_master(int drive_number);
     int hanafs_stat(const char* path, struct hana_stat* st);
-    struct hana_dir; // opaque
-    struct hana_dirent { uint64_t d_ino; uint8_t d_type; char d_name[256]; };
-    struct hana_dir* hanafs_opendir(const char* path);
-    struct hana_dirent* hanafs_readdir(struct hana_dir* dir);
-    int hanafs_closedir(struct hana_dir* dir);
+    hana_dir_t* hanafs_opendir(const char* path);
+    hana_dirent* hanafs_readdir(hana_dir_t* dir);
+    int hanafs_closedir(hana_dir_t* dir);
 }

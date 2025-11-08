@@ -443,6 +443,49 @@ extern "C" int hanafs_list_dir(const char* path, void (*cb)(const char* name)) {
     return 0;
 }
 
+extern "C" struct hana_dir* hanafs_opendir(const char* path) {
+    if (!path) return NULL;
+    size_t psz = strlen(path) + 2;
+    char* pbuf = (char*)hanacore::mem::kmalloc(psz);
+    if (!pbuf) return NULL;
+    for (size_t i = 0; i < psz-1; ++i) pbuf[i] = path[i]; pbuf[psz-1] = '\0';
+    int drv = parse_drive_prefix_inplace(pbuf, psz);
+    normalize_path_inplace(pbuf, psz);
+    char ipath[512]; build_internal_path(pbuf, drv < 0 ? 0 : drv, ipath, sizeof(ipath));
+    HanaDirObj* d = (HanaDirObj*)hanacore::mem::kmalloc(sizeof(HanaDirObj));
+    if (!d) { hanacore::mem::kfree(pbuf); return NULL; }
+    d->ipath = strdup_k(ipath);
+    d->ipath_len = strlen(d->ipath);
+    d->next = g_head;
+    hanacore::mem::kfree(pbuf);
+    return (struct hana_dir*)d;
+}
+
+extern "C" struct hana_dirent* hanafs_readdir(struct hana_dir* dirp) {
+    if (!dirp) return NULL;
+    HanaDirObj* d = (HanaDirObj*)dirp;
+    size_t iplen = d->ipath_len;
+    for (HanaEntry* e = d->next; e; e = e->next) {
+        d->next = e->next;
+        if (strcmp(e->path, d->ipath) == 0) continue;
+        if (strncmp(e->path, d->ipath, iplen) != 0) continue;
+        const char* rest = e->path + iplen;
+        if (*rest == '/') ++rest;
+        const char* slash = strchr(rest, '/');
+        if (slash) continue; // not immediate child
+        return make_dirent(rest, e->is_dir);
+    }
+    return NULL;
+}
+
+extern "C" int hanafs_closedir(struct hana_dir* dirp) {
+    if (!dirp) return -1;
+    HanaDirObj* d = (HanaDirObj*)dirp;
+    if (d->ipath) hanacore::mem::kfree(d->ipath);
+    hanacore::mem::kfree(d);
+    return 0;
+}
+
 extern "C" int hanafs_create_file(const char* path) {
     return hanafs_write_file(path, NULL, 0);
 }
