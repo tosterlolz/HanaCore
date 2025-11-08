@@ -1,3 +1,8 @@
+// Stub for stack protector failure (needed for freestanding builds)
+void __stack_chk_fail(void) {
+    // Print error or halt if desired
+    for (;;) {}
+}
 /* Userland shell running via hana syscalls.
  * Simple line-oriented shell that uses hana_spawn/hana_wait for commands
  * and hana_read/hana_write for IO. This is a minimal, robust implementation

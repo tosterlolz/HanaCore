@@ -25,8 +25,12 @@ build: clean build-kernel
 	cmake --build build/cmake --target install_iso || true; \
 	# Build user programs and populate rootfs_src so they are included in the ISO
 	./tools/build_user_programs.sh || true; \
+	# Build rootfs.img automatically
+	./tools/mkrootfs.sh || true; \
 	# Ensure boot dir exists
 	mkdir -p build/cmake/iso_root/boot; \
+	# Always copy rootfs.img into ISO staging area before ISO creation
+	cp -v build/rootfs.img build/cmake/iso_root/rootfs.img || true; \
 	# Create ISO from CMake staging area (xorriso/genisoimage/mkisofs optional)
 	if command -v xorriso >/dev/null 2>&1; then \
 		xorriso -as mkisofs -b boot/limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table build/cmake/iso_root -o build/HanaCore.iso 2>/dev/null || true; \

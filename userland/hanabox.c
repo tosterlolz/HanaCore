@@ -1,3 +1,7 @@
+// Stub for stack protector failure (needed for freestanding builds)
+void __stack_chk_fail(void) {
+    for (;;) {}
+}
 #include "../kernel/api/hanaapi.h"
 #include <stdint.h>
 

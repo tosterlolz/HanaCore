@@ -1,9 +1,14 @@
+# -------- Ensure shell is present --------
+if [ ! -x "$SRC_DIR/rootfs_src/bin/hcsh" ]; then
+    echo "[WARNING] rootfs_src/bin/hcsh is missing or not executable! Shell will not boot automatically."
+else
+    echo "[INFO] Found shell: rootfs_src/bin/hcsh"
+fi
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./mkrootfs.sh <build_dir> <source_dir>
-BUILD_DIR=$1
-SRC_DIR=$2
+BUILD_DIR="./build"
+SRC_DIR="./rootfs_src"
 IMG="$BUILD_DIR/rootfs.img"
 SIZE_MB=4
 TMPDIR="$(mktemp -d)"
@@ -51,16 +56,16 @@ if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
     if sudo mount -o loop "$IMG" "$MNT" 2>/dev/null; then
         echo "mkrootfs: mounted image at $MNT"
         sudo mkdir -p "$MNT"
-        if [ -d "$SRC_DIR/rootfs_src" ]; then
-            echo "mkrootfs: copying files from ${SRC_DIR}/rootfs_src/"
+        if [ -d "$SRC_DIR/bin" ]; then
+            echo "mkrootfs: copying files from ${SRC_DIR}/"
             # Try to copy preserving attributes; if preserving ownership fails
             # (non-root filesystem), fall back to copying without preserving owner.
-            if ! sudo cp -a "$SRC_DIR/rootfs_src/." "$MNT/" 2>/dev/null; then
+            if ! sudo cp -a "$SRC_DIR/." "$MNT/" 2>/dev/null; then
                 echo "mkrootfs: cp -a failed (owner preserve) — retrying without ownership preservation"
-                sudo cp -a --no-preserve=ownership "$SRC_DIR/rootfs_src/." "$MNT/" || true
+                sudo cp -a --no-preserve=ownership "$SRC_DIR/." "$MNT/" || true
             fi
         else
-            echo "mkrootfs: no rootfs_src found; creating README"
+            echo "mkrootfs: no bin/ found in rootfs_src; creating README"
             echo "HanaCore rootfs image" | sudo tee "$MNT/README.txt" >/dev/null
         fi
         sync
@@ -80,14 +85,14 @@ if [ "$USE_MTOOLS_FALLBACK" -eq 1 ]; then
         echo "mkrootfs: using mtools (mcopy/mmd)"
         export MTOOLS_SKIP_CHECK=1
         mmd -i "$IMG" ::/ || true
-        if [ -d "$SRC_DIR/rootfs_src" ]; then
-            echo "mkrootfs: copying files from ${SRC_DIR}/rootfs_src/"
-            (cd "$SRC_DIR/rootfs_src" && \
+        if [ -d "$SRC_DIR/bin" ]; then
+            echo "mkrootfs: copying files from ${SRC_DIR}/"
+            (cd "$SRC_DIR" && \
                 find . -type d -print0 | while IFS= read -r -d '' d; do
                     [[ "$d" == "." ]] && continue
                     mmd -i "$IMG" ::"/$d" || true
                 done)
-            (cd "$SRC_DIR/rootfs_src" && \
+            (cd "$SRC_DIR" && \
                 find . -type f -print0 | while IFS= read -r -d '' f; do
                     parentdir=$(dirname "$f")
                     if [ "$parentdir" != "." ]; then
@@ -96,7 +101,7 @@ if [ "$USE_MTOOLS_FALLBACK" -eq 1 ]; then
                     mcopy -n -D A -i "$IMG" "$f" ::"/$f" || true
                 done)
         else
-            echo "mkrootfs: no rootfs_src found; creating README"
+            echo "mkrootfs: no bin/ found in rootfs_src; creating README"
             echo "HanaCore rootfs image" > "$TMPDIR/README.txt"
             mcopy -i "$IMG" "$TMPDIR/README.txt" ::/README.txt
         fi

@@ -35,7 +35,6 @@ set(EXTRA_C_SRCS
         ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/flanterm/src/flanterm_backends/fb.c
         ${CMAKE_CURRENT_SOURCE_DIR}/boot/limine_entry.c
         ${CMAKE_CURRENT_SOURCE_DIR}/libs/libc.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/shell/shell.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/scheduler/scheduler.cpp
 )
 

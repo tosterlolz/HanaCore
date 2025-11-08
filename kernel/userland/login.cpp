@@ -4,7 +4,6 @@
 #include "../libs/libc.h"
 #include "../utils/logger.hpp"
 #include "../scheduler/scheduler.hpp"
-#include "shell.hpp"
 #include <string.h>
 
 extern "C" {
@@ -101,7 +100,6 @@ namespace hanacore {
                         print("Type 'help' for available commands.\n\n");
 
                         // Start the interactive shell
-                        shell_main();
                         return;
                     }
                 } else {
