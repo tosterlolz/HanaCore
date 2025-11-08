@@ -203,6 +203,34 @@ extern "C" int ata_write_sector(uint32_t lba, const void* buf) {
     return ok ? 0 : -1;
 }
 
+// Read a sector from the specified drive (0 = master, 1 = slave).
+extern "C" int ata_read_sector_drive(uint32_t drive, uint32_t lba, void* buf) {
+    static bool ide_initialized = false;
+    if (!ide_initialized) {
+        ide_initialized = hanacore::drivers::ide_init();
+        if (!ide_initialized) {
+            hanacore::utils::log_info_cpp("[IDE] ide_init() failed — ATA device not available");
+        }
+    }
+    if (!ide_initialized) return -1;
+    bool ok = hanacore::drivers::ide_read_lba28((uint64_t)lba, 1, buf, drive == 0);
+    return ok ? 0 : -1;
+}
+
+// Write a sector to the specified drive (0 = master, 1 = slave).
+extern "C" int ata_write_sector_drive(uint32_t drive, uint32_t lba, const void* buf) {
+    static bool ide_initialized = false;
+    if (!ide_initialized) {
+        ide_initialized = hanacore::drivers::ide_init();
+        if (!ide_initialized) {
+            hanacore::utils::log_info_cpp("[IDE] ide_init() failed — ATA device not available");
+            return -1;
+        }
+    }
+    bool ok = hanacore::drivers::ide_write_lba28((uint64_t)lba, 1, buf, drive == 0);
+    return ok ? 0 : -1;
+}
+
 // Return the total number of user-addressable sectors reported by IDENTIFY (LBA28).
 // Returns -1 on failure.
 extern "C" int32_t ata_get_sector_count() {
@@ -234,6 +262,39 @@ extern "C" int32_t ata_get_sector_count() {
     }
 
     // Words 60-61 contain total number of user-addressable sectors (LBA28)
+    uint32_t low = ident[60];
+    uint32_t high = ident[61];
+    uint32_t total = (high << 16) | low;
+    return (int32_t)total;
+}
+
+// Drive-specific variant: 0 = master, 1 = slave
+extern "C" int32_t ata_get_sector_count_drive(int drive) {
+    unsigned short ident[256];
+
+    // select drive
+    outb(drive == 0 ? hanacore::drivers::ATA_DRIVE : (hanacore::drivers::ATA_DRIVE | 0x10), 0xA0);
+    io_wait();
+    outb(hanacore::drivers::ATA_COMMAND, 0xEC);
+    io_wait();
+
+    unsigned char s = inb(hanacore::drivers::ATA_COMMAND);
+    if (s == 0) return -1;
+    if (s & 0x01) return -1;
+
+    if (!hanacore::drivers::ata_wait_not_busy(500)) return -1;
+
+    unsigned int tries = 1000000;
+    while (tries--) {
+        unsigned char st = inb(hanacore::drivers::ATA_COMMAND);
+        if (st & 0x08) break;
+        if (st & 0x01) return -1;
+    }
+
+    for (int i = 0; i < 256; ++i) {
+        ident[i] = inw(hanacore::drivers::ATA_DATA);
+    }
+
     uint32_t low = ident[60];
     uint32_t high = ident[61];
     uint32_t total = (high << 16) | low;

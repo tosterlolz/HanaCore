@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Usage: ./mkrootfs.sh <build_dir> <source_dir>
-BUILD_DIR="$1"
-SRC_DIR="$2"
+BUILD_DIR=$1
+SRC_DIR=$2
 IMG="$BUILD_DIR/rootfs.img"
 SIZE_MB=4
 TMPDIR="$(mktemp -d)"

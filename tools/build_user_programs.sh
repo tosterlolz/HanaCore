@@ -23,6 +23,13 @@ echo "Copying into $ROOTFS_SRC/bin/..."
 cp "$OUT_DIR/hello_hana.elf" "$ROOTFS_SRC/bin/hello_hana"
 echo "Done: $ROOTFS_SRC/bin/hello_hana"
 
+echo "Building hanabox user program..."
+${CC} -ffreestanding -nostdlib -nostartfiles -static \
+    -o "$OUT_DIR/hanabox.elf" \
+    userland/crt0.S userland/libhana.c userland/hanabox.c
+cp "$OUT_DIR/hanabox.elf" "$ROOTFS_SRC/bin/hanabox"
+echo "Done: $ROOTFS_SRC/bin/hanabox"
+
 # --- Simple ISO creation ---
 echo "Creating ISO image with xorriso..."
 xorriso -as mkisofs \

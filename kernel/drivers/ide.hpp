@@ -23,5 +23,8 @@ bool ide_write_lba28(uint64_t lba, uint8_t count, const void* buf, bool master);
 extern "C" {
 	int ata_read_sector(uint32_t lba, void* buf);
 	int ata_write_sector(uint32_t lba, const void* buf);
+	int ata_read_sector_drive(uint32_t drive, uint32_t lba, void* buf);
+	int ata_write_sector_drive(uint32_t drive, uint32_t lba, const void* buf);
 	int32_t ata_get_sector_count();
+	int32_t ata_get_sector_count_drive(int drive);
 }

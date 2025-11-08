@@ -1,6 +1,7 @@
 #include "scheduler.hpp"
 #include "../mem/heap.hpp"
 #include "../utils/logger.hpp"
+#include "../userland/fdtable.hpp"
 #include <string.h>
 
 extern "C" void context_switch(uint64_t **old_sp_ptr, uint64_t **new_sp_ptr,
@@ -68,6 +69,18 @@ int create_task(void (*entry)(void)) {
     t->pid = next_pid++;
     t->state = TASK_READY;
     t->entry = entry;
+    // allocate FD table for the task
+    t->fd_count = 64;
+    t->fds = fdtable_create(t->fd_count);
+    if (t->fds) {
+        // initialize std fds to TTY placeholders (0/1/2)
+        // actual mapping to tty is done elsewhere; mark them as TTY for now
+        for (int i = 0; i < 3 && i < t->fd_count; ++i) {
+            t->fds[i].type = FD_TTY;
+        }
+    }
+    t->exit_status = -1;
+    t->parent_pid = 0;
 
     uint64_t *sp = (uint64_t *)(stack + TASK_STACK_SIZE);
     // Align to 16 bytes
@@ -144,6 +157,16 @@ void sched_yield() {
 
 int sched_getpid() {
     return current_task ? current_task->pid : 0;
+}
+
+Task* find_task_by_pid(int pid) {
+    if (!task_list) return nullptr;
+    Task* cur = task_list;
+    do {
+        if (cur->pid == pid) return cur;
+        cur = cur->next;
+    } while (cur && cur != task_list);
+    return nullptr;
 }
 
 } // namespace hanacore::scheduler

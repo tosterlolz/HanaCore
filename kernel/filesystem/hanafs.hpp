@@ -22,6 +22,9 @@ namespace hanacore { namespace fs {
     // configurable via HANAFS_PERSIST_LBA in the implementation (default 2048).
     int hanafs_persist_to_ata(void);
     int hanafs_load_from_ata(void);
+    int hanafs_format_ata_master(int drive_number);
+    // Query metadata about a path. Fills a hana_stat structure (defined in ../api/hanaapi.h)
+    int hanafs_stat(const char* path, struct hana_stat* st);
 } }
 #endif
 
@@ -38,4 +41,6 @@ extern "C" {
     int hanafs_persist_to_ata(void);
     int hanafs_load_from_ata(void);
     int hanafs_list_mounts(void (*cb)(const char* line));
+    int hanafs_format_ata_master(int drive_number);
+    int hanafs_stat(const char* path, struct hana_stat* st);
 }

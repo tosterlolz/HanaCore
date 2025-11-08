@@ -9,7 +9,7 @@
 #include "../mem/heap.hpp"
 #include "../tty/tty.hpp"
 
-    extern "C" {
+extern "C" {
     void print(const char*);
     char keyboard_poll_char(void);
     void builtin_ls_cmd(const char* path);
@@ -21,54 +21,41 @@
     void builtin_touch_cmd(const char* arg);
     void builtin_rm_cmd(const char* arg);
     void builtin_fetch_cmd(const char* arg);
+    void builtin_cat_cmd(const char* arg);
 }
 
 static char cwd[256] = "/";
-static char current_drive = '0';
 
 static void print_prompt() {
-    char d[3] = { current_drive, ':', '\0' };
     // Use TTY for prompt output so it can be redirected/overridden later
-    tty_write(d);
     tty_write(cwd);
     tty_write("$ ");
 }
 
 static void build_path(char* out, size_t out_size, const char* arg) {
-    size_t pos = 0;
-    out[pos++] = current_drive;
-    out[pos++] = ':';
-
+    // If no arg, return cwd. If arg starts with '/', it's absolute.
+    if (!out || out_size == 0) return;
     if (!arg || *arg == '\0') {
         size_t i = 0;
-        while (i + pos < out_size - 1 && cwd[i]) out[pos++] = cwd[i++];
-        out[pos] = '\0';
+        while (i + 1 < out_size && cwd[i]) { out[i] = cwd[i]; ++i; }
+        out[i] = '\0';
         return;
     }
-
-    if (((arg[0] >= '0' && arg[0] <= '9')) && arg[1] == ':') {
-        char d = arg[0]; 
-        out[0] = d; out[1] = ':'; pos = 2;
-        size_t i = 2;
-        while (pos + i < out_size - 1 && arg[i]) out[pos + i] = arg[i++];
-        out[pos + i] = '\0';
-        return;
-    }
-
     if (arg[0] == '/') {
         size_t i = 0;
-        while (pos + i < out_size - 1 && arg[i]) out[pos + i] = arg[i++];
-        out[pos + i] = '\0';
+        while (i + 1 < out_size && arg[i]) { out[i] = arg[i]; ++i; }
+        out[i] = '\0';
         return;
     }
-
+    // relative path: join cwd and arg
     size_t len = 0;
     while (cwd[len]) ++len;
-    for (size_t i = 0; i < len && pos + i < out_size - 1; ++i) out[pos + i] = cwd[i];
-    pos += len;
-    if (pos > 2 && out[pos - 1] != '/' && pos < out_size - 1) out[pos++] = '/';
+    size_t pos = 0;
+    for (size_t i = 0; i < len && pos + 1 < out_size; ++i) out[pos++] = cwd[i];
+    if (pos == 0) { if (pos + 1 < out_size) out[pos++] = '/'; }
+    if (pos > 0 && out[pos-1] != '/' && pos + 1 < out_size) out[pos++] = '/';
     size_t i = 0;
-    while (pos + i < out_size - 1 && arg[i]) { out[pos + i] = arg[i]; ++i; }
+    while (pos + i + 1 < out_size && arg[i]) { out[pos + i] = arg[i]; ++i; }
     out[pos + i] = '\0';
 }
 
@@ -209,10 +196,10 @@ continue_main_loop:
                         } else {
                             char tmp[256];
                             build_path(tmp, sizeof(tmp), arg);
-                            strncpy(cwd, &tmp[2], sizeof(cwd) - 1);
+                            // ensure we copy the whole path
+                            strncpy(cwd, tmp, sizeof(cwd) - 1);
                             cwd[sizeof(cwd)-1] = '\0';
                             if (strlen(cwd) == 0) strcpy(cwd, "/");
-                            if (arg[1] == ':') current_drive = (arg[0] >= 'a') ? arg[0] - 'a' + 'A' : arg[0];
                         }
                         pos = 0;
                         print_prompt();
@@ -227,7 +214,8 @@ continue_main_loop:
                     if (strcmp(cmd, "rmdir") == 0) { builtin_rmdir_cmd(arg); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "touch") == 0) { builtin_touch_cmd(arg); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "rm") == 0) { builtin_rm_cmd(arg); pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "pwd") == 0) { char path[260]; path[0]=current_drive; path[1]=':'; strncpy(&path[2], cwd, sizeof(path)-3); path[sizeof(path)-1]='\0'; tty_write(path); tty_write("\n"); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "cat") == 0) { char path[256]; build_path(path, sizeof(path), arg); builtin_cat_cmd(path); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "pwd") == 0) { tty_write(cwd); tty_write("\n"); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "clear") == 0) { clear_screen(); pos=0; print_prompt(); continue; }
             		if (strcmp(cmd, "echo") == 0) { if(arg && *arg) tty_write(arg); tty_write("\n"); pos=0; print_prompt(); continue; }
 					if (strcmp(cmd, "help") == 0) {
@@ -239,8 +227,9 @@ continue_main_loop:
 						print("  install <src>   Install OS from FAT32 path\n");
 						print("  mkdir <path>    Create directory\n");
 						print("  rmdir <path>    Remove directory\n");
-						print("  touch <file>    Create empty file\n");
-						print("  rm <file>       Remove file\n");
+                        print("  touch <file>    Create empty file\n");
+                        print("  rm <file>       Remove file\n");
+                        print("  cat <file>      Print file contents\n");
 						print("  pwd             Print working directory\n");
 						print("  clear           Clear the screen\n");
 						print("  echo <text>     Print text to console\n");

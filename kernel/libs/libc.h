@@ -28,6 +28,7 @@ int memcmp(const void* s1, const void* s2, size_t n);
 size_t strlen(const char* s);
 int strcmp(const char* a, const char* b);
 int vsnprintf(char* str, size_t size, const char* format, va_list ap);
+int sprintf(char* str, const char* format, ...);
 int snprintf(char* str, size_t size, const char* format, ...);
 
 // ===== Conversion functions =====

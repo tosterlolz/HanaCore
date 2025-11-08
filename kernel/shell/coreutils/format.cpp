@@ -1,4 +1,4 @@
-#include "../../filesystem/fat32.hpp"
+#include "../../filesystem/hanafs.hpp"
 #include <stddef.h>
 
 extern "C" void print(const char*);
@@ -27,8 +27,8 @@ extern "C" void builtin_format_cmd(const char* arg) {
         return;
     }
 
-    print("Formatting ATA master as FAT32 (this will erase data)...\n");
-    int rc = fat32_format_ata_master(0);
+    print("Formatting ATA master as HanaFS (this will erase data)...\n");
+    int rc = hanacore::fs::hanafs_format_ata_master(0);
     if (rc == 0) {
         print("format: completed successfully\n");
     } else {

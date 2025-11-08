@@ -21,7 +21,6 @@ set(EXTRA_C_SRCS
   ${CMAKE_SOURCE_DIR}/boot/limine_entry.c
   ${CMAKE_SOURCE_DIR}/flanterm/src/flanterm.c
   ${CMAKE_SOURCE_DIR}/flanterm/src/flanterm_backends/fb.c
-  ${CMAKE_SOURCE_DIR}/kernel/libs/nanoprintf.c
   ${CMAKE_SOURCE_DIR}/kernel/libs/libc.c
   ${CMAKE_SOURCE_DIR}/kernel/shell/shell.cpp
   ${CMAKE_SOURCE_DIR}/kernel/scheduler/scheduler.cpp

@@ -1,7 +1,6 @@
 #include "drivers/screen.hpp"
 #include "drivers/framebuffer.hpp"
 #include "drivers/keyboard.hpp"
-#include "./libs/nanoprintf.h"
 #include "arch/gdt.hpp"
 #include "arch/idt.hpp"
 #include "arch/pic.hpp"
@@ -101,7 +100,7 @@ extern "C" void kernel_main() {
     } else {
         log_fail("Framebuffer not available");
     }
-    nano_log("\n=== HanaCore Kernel Starting ===\n");
+    log_info("\n=== HanaCore Kernel Starting ===\n");
     call_constructors();
     log_ok("Global constructors called.\n");
     gdt_install();

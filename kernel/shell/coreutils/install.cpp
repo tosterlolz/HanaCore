@@ -10,7 +10,7 @@
 #include "../../../limine/limine.h"
 #include "../../mem/heap.hpp"
 #include "../../drivers/screen.hpp"
-#include "../../libs/nanoprintf.h"
+#include "../../libs/libc.h"
 
 // Node type for install traversal (file-scope so callbacks can push into it)
 struct InstallNameNode { char name[32]; InstallNameNode* next; };
