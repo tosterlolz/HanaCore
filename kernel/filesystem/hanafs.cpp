@@ -65,6 +65,24 @@ static void normalize_path_inplace(char* buf, size_t sz) {
     while (l > 1 && buf[l-1] == '/') { buf[l-1] = '\0'; --l; }
 }
 
+// Directory iterator object used by hanafs_opendir/hanafs_readdir
+struct HanaDirObj {
+    char* ipath; // internal path used for matching (e.g., /drv0/foo)
+    size_t ipath_len;
+    HanaEntry* next; // next entry to inspect
+};
+
+// Helper to create a hana_dirent from entry name and type
+static struct hana_dirent* make_dirent(const char* name, int is_dir) {
+    struct hana_dirent* de = (struct hana_dirent*)hanacore::mem::kmalloc(sizeof(struct hana_dirent));
+    if (!de) return NULL;
+    de->d_ino = 0;
+    de->d_type = (uint8_t)(is_dir ? 1 : 0);
+    size_t i = 0; while (i + 1 < sizeof(de->d_name) && name[i]) { de->d_name[i] = name[i]; ++i; }
+    de->d_name[i] = '\0';
+    return de;
+}
+
 // If path begins with a drive prefix like '0:/', remove the leading "N:" so
 // HanaFS operates on a single unified namespace. This modifies buf in-place.
 // Parse optional drive prefix like 'N:...' at start of buf. If present,
