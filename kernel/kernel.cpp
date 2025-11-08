@@ -15,6 +15,7 @@ extern "C" void fat32_mount_all_letter_modules();
 #include "scheduler/scheduler.hpp"
 #include "shell/shell.hpp"
 #include "mem/heap.hpp"
+#include "userland/elf_loader.hpp"
 #include "utils/utils.hpp"
 // Linker script symbols for init/fini arrays
 extern "C" {
@@ -200,24 +201,46 @@ extern "C" void kernel_main() {
     }
 
         // If no external shell was found, fall back to built-in shell as a task
-        keyboard_init();
-        print("No external shell found — starting built-in shell as task.\n");
+            keyboard_init();
+            print("attempting to run /bin/hcsh\n");
 
-        // Initialize scheduler (cooperative for now) and create a task for the built-in shell.
-        log_info("kernel: initializing scheduler");
-        hanacore::scheduler::init_scheduler();
-        log_info("kernel: scheduler initialized");
+            // Try to run /bin/hcsh (userland shell) from HanaFS. If present, load
+            // ELF image into memory and spawn it as a task. Otherwise fall back to
+            // built-in shell.
+            hanacore::scheduler::init_scheduler();
+            log_info("kernel: scheduler initialized");
 
-        // Create shell task
-        int shell_pid = hanacore::scheduler::create_task((void(*)(void))hanacore::shell::shell_main);
-        log_info("kernel: created shell task");
-        log_hex64("kernel: shell pid", (uint64_t)shell_pid);
-        hanacore::shell::shell_main();
-        // Switch to the newly created task. Cooperative scheduling: tasks must call
-        // `sched_yield()` to let other tasks run. We deliberately avoid enabling
-        // PIT/PIC here to prevent interrupts during early testing.
-        log_info("kernel: about to schedule_next()");
-        hanacore::scheduler::schedule_next();
-        // If scheduler returns, just idle.
-        for (;;) __asm__ volatile("hlt");
+            size_t fsize = 0;
+            void* fdata = hanacore::fs::hanafs_get_file_alloc("/bin/hcsh", &fsize);
+            if (fdata && fsize > 0) {
+                log_info("kernel: found /bin/hcsh in HanaFS, loading ELF");
+                void* entry = elf64_load_from_memory(fdata, fsize);
+                // free original buffer; elf loader copies segments into bump allocator
+                hanacore::mem::kfree(fdata);
+                if (entry) {
+                    // Spawn ELF as a user-mode task (ring-3). This will perform
+                    // a minimal iret-based transition; full address-space
+                    // isolation (VMM) is TODO.
+                    int shell_pid = hanacore::scheduler::create_user_task(entry, 64 * 1024);
+                    log_info("kernel: spawned /bin/hcsh as task");
+                    log_hex64("kernel: shell pid", (uint64_t)shell_pid);
+                    // Switch to the newly created task
+                    hanacore::scheduler::schedule_next();
+                    for (;;) __asm__ volatile("hlt");
+                } else {
+                    log_info("kernel: ELF load failed for /bin/hcsh; falling back to built-in shell");
+                }
+            } else {
+                log_info("kernel: /bin/hcsh not found in HanaFS; falling back to built-in shell");
+            }
+
+            // Fallback: spawn built-in shell as a task and switch to it. Do not
+            // also call shell_main() inline — that would start two shells.
+            print("Starting built-in shell as task.\n");
+            int shell_pid = hanacore::scheduler::create_task((void(*)(void))hanacore::shell::shell_main);
+            log_info("kernel: created built-in shell task");
+            log_hex64("kernel: shell pid", (uint64_t)shell_pid);
+            // Switch to the newly created task and let scheduler drive execution.
+            hanacore::scheduler::schedule_next();
+            for (;;) __asm__ volatile("hlt");
 }

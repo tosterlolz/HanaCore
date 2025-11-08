@@ -198,12 +198,18 @@ extern "C" int hanafs_write_file(const char* path, const void* buf, size_t len) 
     } else {
         e->data = NULL; e->len = 0;
     }
-    // Attempt to persist to ATA; log result but don't fail the write on
-    // persistence errors (so HanaFS remains usable even without ATA).
-    if (hanafs_persist_to_ata() == 0) {
-        hanacore::utils::log_info_cpp("[HanaFS] persisted file %s to ATA", ipath);
-    } else {
-        hanacore::utils::log_info_cpp("[HanaFS] failed to persist file %s to ATA", ipath);
+    // Attempt to persist to ATA for most files; however small, frequently
+    // updated files (like interactive history) should not force a disk
+    // write on every change. Additionally, callers can disable persistence
+    // temporarily (e.g., when bulk-mounting an ISO) via
+    // `hanafs_set_persist_enabled(0)`.
+    extern int g_hanafs_persist_enabled;
+    if (strcmp(ipath, "/hcsh_history") != 0 && g_hanafs_persist_enabled) {
+        if (hanafs_persist_to_ata() == 0) {
+            hanacore::utils::log_info_cpp("[HanaFS] persisted file %s to ATA", ipath);
+        } else {
+            hanacore::utils::log_info_cpp("[HanaFS] failed to persist file %s to ATA", ipath);
+        }
     }
     return 0;
 }
@@ -278,6 +284,11 @@ extern "C" int hanafs_persist_to_ata(void) {
     hanacore::mem::kfree(buf);
     g_loaded_from_ata = 1;
     return 0;
+}
+
+extern "C" void hanafs_set_persist_enabled(int enabled) {
+    extern int g_hanafs_persist_enabled;
+    g_hanafs_persist_enabled = enabled ? 1 : 0;
 }
 
 // Create an empty HanaFS filesystem and write it to ATA starting at
@@ -645,8 +656,16 @@ extern "C" int hanafs_mount_iso_drive(int drive, const char* mount_point) {
     uint32_t root_size = le32(rr + 10);
     // Create mount point directory
     hanacore::fs::hanafs_make_dir(mount_point);
-    // Recursively parse and populate HanaFS
+    // Recursively parse and populate HanaFS. Disable per-write persistence
+    // while mounting to avoid a large number of ATA writes and possible
+    // side-effects; persist once at the end.
+    extern int g_hanafs_persist_enabled;
+    int old = g_hanafs_persist_enabled;
+    g_hanafs_persist_enabled = 0;
     parse_iso_dir_recursive(drive, root_lba, root_size, mount_point);
+    // Persist HanaFS once after the mount completes.
+    g_hanafs_persist_enabled = old;
+    hanafs_persist_to_ata();
     return 0;
 }
 
@@ -703,6 +722,10 @@ static void parse_iso_dir_recursive(int drive, uint32_t lba, uint32_t size, cons
     hanacore::mem::kfree(buf);
 }
 
+// Global flag controlling whether hanafs_write_file attempts to persist to ATA.
+// Declared here as `int` for C compatibility; 1 means enabled, 0 disabled.
+int g_hanafs_persist_enabled = 1;
+
 // C++ namespace wrappers so callers can use hanacore::fs::hanafs_* APIs.
 #ifdef __cplusplus
 namespace hanacore { namespace fs {
@@ -718,5 +741,30 @@ namespace hanacore { namespace fs {
     int hanafs_load_from_ata(void) { return ::hanafs_load_from_ata(); }
     int hanafs_list_mounts(void (*cb)(const char* line)) { return ::hanafs_list_mounts(cb); }
     int hanafs_format_ata_master(int drive_number) { return ::hanafs_format_ata_master(drive_number); }
+} }
+#endif
+
+// New requested public API: `hanafs::fs::...` -- thin wrappers delegating to
+// the existing C functions for now. This keeps callers compiling while we
+// implement or replace the backend with ext3.
+#ifdef __cplusplus
+namespace hanafs { namespace fs {
+    int init(void) { return ::hanafs_init(); }
+    int mount(int drive, const char* mount_point) { return ::hanafs_mount_iso_drive(drive, mount_point); }
+    int write_file(const char* path, const void* buf, size_t len) { return ::hanafs_write_file(path, buf, len); }
+    void* get_file_alloc(const char* path, size_t* out_len) { return ::hanafs_get_file_alloc(path, out_len); }
+    int list_dir(const char* path, void (*cb)(const char* name)) { return ::hanafs_list_dir(path, cb); }
+    int create_file(const char* path) { return ::hanafs_create_file(path); }
+    int unlink(const char* path) { return ::hanafs_unlink(path); }
+    int make_dir(const char* path) { return ::hanafs_make_dir(path); }
+    int remove_dir(const char* path) { return ::hanafs_remove_dir(path); }
+    int persist_to_ata(void) { return ::hanafs_persist_to_ata(); }
+    int load_from_ata(void) { return ::hanafs_load_from_ata(); }
+    int format_ata_master(int drive_number) { return ::hanafs_format_ata_master(drive_number); }
+    void set_persist_enabled(int enabled) { ::hanafs_set_persist_enabled(enabled); }
+    int stat(const char* path, struct hana_stat* st) { return ::hanafs_stat(path, st); }
+    hana_dir_t* opendir(const char* path) { return ::hanafs_opendir(path); }
+    hana_dirent* readdir(hana_dir_t* dir) { return ::hanafs_readdir(dir); }
+    int closedir(hana_dir_t* dir) { return ::hanafs_closedir(dir); }
 } }
 #endif

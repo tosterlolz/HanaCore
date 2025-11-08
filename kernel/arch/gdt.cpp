@@ -20,8 +20,8 @@ struct __attribute__((packed)) gdt_ptr {
     uint64_t base;
 };
 
-// Three entries: null, kernel code, kernel data
-static gdt_entry gdt[3];
+// Entries: null, kernel code, kernel data, user code, user data
+static gdt_entry gdt[6];
 static gdt_ptr gp;
 
 extern "C" void gdt_reload_segments(); // implemented in assembly
@@ -58,11 +58,18 @@ extern "C" void gdt_install() {
     set_gdt_entry(0, 0, 0, 0, 0);
 
     // Kernel code segment: access 0x9A, long mode bit set in granularity
-    // gran: 0x20 for L bit; set upper nibble accordingly (0x20)
     set_gdt_entry(1, 0, 0, 0x9A, 0x20);
 
-    // Kernel data segment: access 0x92, granularity 0
+    // Kernel data segment: access 0x92
     set_gdt_entry(2, 0, 0, 0x92, 0x00);
+
+    // User code segment: DPL=3, executable/readable, long mode
+    // Access byte: 0xFA (P=1, DPL=3, S=1, Type=1010)
+    set_gdt_entry(3, 0, 0, 0xFA, 0x20);
+
+    // User data segment: DPL=3, read/write
+    // Access byte: 0xF2 (P=1, DPL=3, S=1, Type=0010)
+    set_gdt_entry(4, 0, 0, 0xF2, 0x00);
 
     gp.limit = sizeof(gdt) - 1;
     gp.base = (uint64_t)&gdt;

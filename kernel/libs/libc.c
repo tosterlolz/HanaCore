@@ -56,6 +56,10 @@ int strcmp(const char *a, const char *b) {
     return (unsigned char)*a - (unsigned char)*b;
 }
 
+int isdigit(int c) {
+    return (c >= '0' && c <= '9') ? 1 : 0;
+}
+
 int strncmp(const char *a, const char *b, size_t n) {
     if (n == 0) return 0;
     size_t i = 0;

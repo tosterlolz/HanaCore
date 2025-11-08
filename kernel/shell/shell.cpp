@@ -1,10 +1,12 @@
 #include "shell.hpp"
-#include "../filesystem/fat32.hpp"
+#include "../filesystem/ext3.hpp"
 #include "../filesystem/hanafs.hpp"
 #include "../userland/elf_loader.hpp"
 #include "../drivers/screen.hpp"
+#include "../scheduler/scheduler.hpp"
 #include <stddef.h>
 #include <string.h>
+#include <ctype.h>
 #include "../libs/libc.h"
 #include "../mem/heap.hpp"
 #include "../tty/tty.hpp"
@@ -22,9 +24,120 @@ extern "C" {
     void builtin_rm_cmd(const char* arg);
     void builtin_fetch_cmd(const char* arg);
     void builtin_cat_cmd(const char* arg);
+    void builtin_mount_cmd(const char* arg);
 }
 
 static char cwd[256] = "/";
+
+// Simple registry for shell builtins that will be spawned as separate tasks.
+typedef void (*builtin_func_t)(const char*);
+struct builtin_reg { char name[32]; builtin_func_t func; };
+static builtin_reg g_builtin_table[32];
+static int g_builtin_count = 0;
+
+extern "C" void register_shell_cmd(const char* name, void (*func)(const char*)) {
+    if (!name || !func) return;
+    if (g_builtin_count >= (int)(sizeof(g_builtin_table)/sizeof(g_builtin_table[0]))) return;
+    int i = g_builtin_count++;
+    int j = 0; while (j + 1 < (int)sizeof(g_builtin_table[i].name) && name[j]) { g_builtin_table[i].name[j] = name[j]; ++j; }
+    g_builtin_table[i].name[j] = '\0';
+    g_builtin_table[i].func = func;
+}
+
+// Spawn a registered builtin by name. Returns pid (>0) on success or -1.
+extern "C" int spawn_registered_cmd(const char* name, const char* arg);
+
+extern "C" void shell_builtin_wrapper(void* v);
+
+extern "C" int spawn_registered_cmd(const char* name, const char* arg) {
+    if (!name) return -1;
+    builtin_func_t fn = NULL;
+    for (int i = 0; i < g_builtin_count; ++i) {
+        if (strcmp(g_builtin_table[i].name, name) == 0) { fn = g_builtin_table[i].func; break; }
+    }
+    if (!fn) return -1;
+
+    struct ctx { builtin_func_t f; char* a; };
+    struct ctx* c = (struct ctx*)hanacore::mem::kmalloc(sizeof(struct ctx));
+    if (!c) return -1;
+    c->f = fn;
+    if (arg) {
+        size_t L = strlen(arg) + 1;
+        c->a = (char*)hanacore::mem::kmalloc(L);
+        if (!c->a) { hanacore::mem::kfree(c); return -1; }
+        for (size_t k = 0; k < L; ++k) c->a[k] = arg[k];
+    } else c->a = NULL;
+
+    int pid = hanacore::scheduler::create_task_with_arg((void(*)(void*))shell_builtin_wrapper, (void*)c);
+    return pid > 0 ? pid : -1;
+}
+
+extern "C" void shell_builtin_wrapper(void* v) {
+    if (!v) return;
+    struct { builtin_func_t f; char* a; } *c = (decltype(c))v;
+    if (c->f) c->f(c->a);
+    if (c->a) hanacore::mem::kfree(c->a);
+    hanacore::mem::kfree(c);
+    if (hanacore::scheduler::current_task) hanacore::scheduler::current_task->state = hanacore::scheduler::TASK_DEAD;
+    hanacore::scheduler::sched_yield();
+}
+
+// mount builtin implementation
+static void build_path(char* out, size_t out_size, const char* arg);
+extern "C" void builtin_mount_cmd(const char* arg) {
+    if (!arg || *arg == '\0') {
+        print("Usage: mount <src> <dst>\n");
+        return;
+    }
+    // parse src and dst
+    const char* s = arg;
+    // skip leading spaces
+    while (*s == ' ') ++s;
+    const char* sp = s;
+    while (*sp && *sp != ' ') ++sp;
+    size_t slen = (size_t)(sp - s);
+    if (slen == 0) { print("Usage: mount <src> <dst>\n"); return; }
+    // skip spaces to dst
+    const char* d = sp;
+    while (*d == ' ') ++d;
+    if (!*d) { print("Usage: mount <src> <dst>\n"); return; }
+
+    char src[128]; size_t i=0;
+    for (; i < sizeof(src)-1 && i < slen; ++i) src[i] = s[i]; src[i] = '\0';
+
+    char dst[256]; // expand relative to cwd
+    // build_path expects the argument token (relative or absolute)
+    build_path(dst, sizeof(dst), d);
+
+    // Basic heuristics: cdrom -> hanafs ISO mount (delegate to hanafs::fs::mount)
+    if (strncmp(src, "/dev/cdrom", 9) == 0 || strstr(src, "cdrom") != NULL) {
+        print("Mounting CD-ROM via HanaFS ISO mount...\n");
+        int rc = hanafs::fs::mount(1, dst);
+        if (rc == 0) print("Mounted CD-ROM to "); else print("Mount failed: ");
+        print(dst); print("\n");
+        return;
+    }
+
+    // ATA/SD devices -> try ext3 mount (drive 0 for primary ATA)
+    if (strncmp(src, "/dev/sda", 8) == 0 || strncmp(src, "/dev/hda", 8) == 0 || strstr(src, "sda") != NULL) {
+        print("Mounting device as ext3 (stub)...\n");
+        int rc = ext3::mount(0, dst);
+        if (rc == 0) print("Mounted device to "); else print("Mount failed: ");
+        print(dst); print("\n");
+        return;
+    }
+
+    // Fallback: attempt hanafs ISO mount with numeric drive if given like '1'
+    if (isdigit((unsigned char)src[0])) {
+        int drv = src[0] - '0';
+        int rc = hanafs::fs::mount(drv, dst);
+        if (rc == 0) print("Mounted drive to "); else print("Mount failed: ");
+        print(dst); print("\n");
+        return;
+    }
+
+    print("mount: unsupported source or filesystem (supported: /dev/cdrom, /dev/sda*)\n");
+}
 
 static void print_prompt() {
     // Use TTY for prompt output so it can be redirected/overridden later
@@ -141,9 +254,23 @@ namespace hanacore {
             // Initialize TTY and greet
             tty_init();
             tty_write("Welcome to HanaShell!\n");
+            // Register built-in commands to be spawned as tasks (do it once)
+            static int builtins_registered = 0;
+            if (!builtins_registered) {
+                register_shell_cmd("ls", builtin_ls_cmd);
+                register_shell_cmd("lsblk", builtin_lsblk_cmd);
+                register_shell_cmd("format", builtin_format_cmd);
+                register_shell_cmd("install", builtin_install_cmd);
+                register_shell_cmd("mkdir", builtin_mkdir_cmd);
+                register_shell_cmd("rmdir", builtin_rmdir_cmd);
+                register_shell_cmd("touch", builtin_touch_cmd);
+                register_shell_cmd("rm", builtin_rm_cmd);
+                register_shell_cmd("cat", builtin_cat_cmd);
+                    register_shell_cmd("mount", builtin_mount_cmd);
+                builtins_registered = 1;
+            }
             print_prompt();
 
-continue_main_loop:
             while (1) {
                 char c = tty_poll_char();
 
@@ -170,15 +297,15 @@ continue_main_loop:
                     for (size_t i = 0; i < pos; ++i) {
                         if (buf[i] == '|') {
                             tty_write("Piping is not supported yet\n");
-                            pos = 0;
-                            print_prompt();
-                            goto continue_main_loop;
-                        }
-                        if (i + 1 < pos && buf[i] == '>' && buf[i+1] == '>') {
-                            tty_write("Append redirection (>>) is not supported yet\n");
-                            pos = 0;
-                            print_prompt();
-                            goto continue_main_loop;
+                    if (strcmp(cmd, "ls") == 0) { char path[256]; build_path(path, sizeof(path), arg); { int pid = spawn_registered_cmd("ls", path); (void)pid; } pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "lsblk") == 0) { { int pid = spawn_registered_cmd("lsblk", NULL); (void)pid; } pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "format") == 0) { { int pid = spawn_registered_cmd("format", arg); (void)pid; } pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "install") == 0) { { int pid = spawn_registered_cmd("install", arg); (void)pid; } pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "mkdir") == 0) { { int pid = spawn_registered_cmd("mkdir", arg); (void)pid; } pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "rmdir") == 0) { { int pid = spawn_registered_cmd("rmdir", arg); (void)pid; } pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "touch") == 0) { { int pid = spawn_registered_cmd("touch", arg); (void)pid; } pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "rm") == 0) { { int pid = spawn_registered_cmd("rm", arg); (void)pid; } pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "cat") == 0) { char path[256]; build_path(path, sizeof(path), arg); { int pid = spawn_registered_cmd("cat", path); (void)pid; } pos=0; print_prompt(); continue; }
                         }
                     }
 
@@ -207,7 +334,25 @@ continue_main_loop:
                     }
 
                     if (strcmp(cmd, "ls") == 0) { char path[256]; build_path(path, sizeof(path), arg); builtin_ls_cmd(path); pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "lsblk") == 0) { builtin_lsblk_cmd(NULL); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "lsblk") == 0) {
+                        auto lsblk_task = [](void* a)->void {
+                            const char* s = (const char*)a;
+                            builtin_lsblk_cmd(s);
+                            if (a) hanacore::mem::kfree(a);
+                        };
+                        void* argcopy = NULL;
+                        if (arg && *arg) {
+                            size_t n = 0; while (arg[n]) ++n; ++n;
+                            argcopy = (void*)hanacore::mem::kmalloc(n);
+                            if (argcopy) {
+                                for (size_t i = 0; i < n; ++i) ((char*)argcopy)[i] = arg[i];
+                            }
+                        }
+                        // create task and yield so the new task can run
+                        hanacore::scheduler::create_task_with_arg((void(*)(void*))lsblk_task, argcopy);
+                        hanacore::scheduler::sched_yield();
+                        pos=0; print_prompt(); continue;
+                    }
                     if (strcmp(cmd, "format") == 0) { builtin_format_cmd(arg); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "install") == 0) { builtin_install_cmd(arg); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "mkdir") == 0) { builtin_mkdir_cmd(arg); pos=0; print_prompt(); continue; }
@@ -215,6 +360,7 @@ continue_main_loop:
                     if (strcmp(cmd, "touch") == 0) { builtin_touch_cmd(arg); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "rm") == 0) { builtin_rm_cmd(arg); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "cat") == 0) { char path[256]; build_path(path, sizeof(path), arg); builtin_cat_cmd(path); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "mount") == 0) { { int pid = spawn_registered_cmd("mount", arg); (void)pid; } pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "pwd") == 0) { tty_write(cwd); tty_write("\n"); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "clear") == 0) { clear_screen(); pos=0; print_prompt(); continue; }
             		if (strcmp(cmd, "echo") == 0) { if(arg && *arg) tty_write(arg); tty_write("\n"); pos=0; print_prompt(); continue; }
