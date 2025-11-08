@@ -8,7 +8,7 @@ extern "C" void builtin_rmdir_cmd(const char* arg) {
         return;
     }
 
-    int rc = hanacore::fs::vfs_remove_dir(arg);
+    int rc = hanacore::fs::remove_dir(arg);
     if (rc == 0) {
         print("rmdir: ok\n");
     } else {

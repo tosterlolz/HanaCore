@@ -8,7 +8,7 @@ extern "C" void builtin_touch_cmd(const char* arg) {
         return;
     }
 
-    int rc = hanacore::fs::vfs_create_file(arg);
+    int rc = hanacore::fs::create_file(arg);
     if (rc == 0) {
         print("touch: ok\n");
     } else {

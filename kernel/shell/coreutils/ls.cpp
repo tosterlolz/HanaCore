@@ -9,7 +9,7 @@ extern "C" {
 
 static const char* ls_base_dir = nullptr;
 
-static void ls_cb(const char* name, int is_dir) {
+static void ls_cb(const char* name) {
     if (!name) return;
 
     char full[256];
@@ -22,14 +22,9 @@ static void ls_cb(const char* name, int is_dir) {
         strcpy(full, name);
     }
 
-    if (is_dir) {
-        tty_write("\x1b[34m"); // blue
-        tty_write(name);
-        tty_write("/\x1b[0m  ");
-    } else {
-        tty_write(name);
-        tty_write("  ");
-    }
+    // Just print the name without color since we don't have type info
+    tty_write(name);
+    tty_write("  ");
 }
 
 extern "C" void builtin_ls_cmd(const char* path) {
@@ -44,10 +39,7 @@ extern "C" void builtin_ls_cmd(const char* path) {
 
     ls_base_dir = path;
 
-    int rc = hanacore::fs::vfs_list_dir(path, [](const char* name, int type) {
-        int is_dir = (type & VFS_TYPE_DIR) ? 1 : 0;
-        ls_cb(name, is_dir);
-    });
+    int rc = hanacore::fs::list_dir(path, ls_cb);
 
     ls_base_dir = nullptr;
 

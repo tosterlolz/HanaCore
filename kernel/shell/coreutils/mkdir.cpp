@@ -8,7 +8,7 @@ extern "C" void builtin_mkdir_cmd(const char* arg) {
         return;
     }
 
-    int rc = hanacore::fs::vfs_make_dir(arg);
+    int rc = hanacore::fs::make_dir(arg);
     if (rc == 0) {
         print("mkdir: ok\n");
     } else {

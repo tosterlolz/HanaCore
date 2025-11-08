@@ -131,7 +131,7 @@ extern "C" void builtin_mount_cmd(const char* arg) {
     int rc = fat32_mount_ata_master(0);
         if (rc == 0) {
             // Register the vfs mount so the mounted filesystem appears at dst
-            hanacore::fs::vfs_register_mount("fat32", dst);
+            hanacore::fs::register_mount("fat32", dst);
             print("Mounted FAT32 device to "); print(dst); print("\n");
             return;
         }
@@ -149,7 +149,7 @@ extern "C" void builtin_mount_cmd(const char* arg) {
     int rc = ramfs_mount_iso_drive(drv, dst);
     if (rc == 0) {
         // ISO was mounted into HanaFS under the mountpoint; register it with VFS
-        hanacore::fs::vfs_register_mount("hanafs", dst);
+        hanacore::fs::register_mount("hanafs", dst);
     }
         if (rc == 0) print("Mounted drive to "); else print("Mount failed: ");
         print(dst); print("\n");
@@ -389,9 +389,9 @@ namespace hanacore {
                     // Execute /bin/<cmd>
                     char fullpath[256];
                     sprintf(fullpath, "/bin/%s", cmd);
-                        tty_write("Trying to execute "); tty_write(fullpath); tty_write("\n");
+                    tty_write("Trying to execute "); tty_write(fullpath); tty_write("\n");
                     size_t fsize = 0;
-                        void* data = hanacore::fs::vfs_get_file_alloc(fullpath, &fsize);
+                    void* data = ::vfs_get_file_alloc(fullpath, &fsize);
                     if (data) {
                         tty_write("Loaded file from FAT32 (size: ");
                         char numbuf[32]; size_t n=0; size_t tmp=fsize;

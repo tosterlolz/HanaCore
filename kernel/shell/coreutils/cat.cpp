@@ -11,7 +11,7 @@ extern "C" void builtin_cat_cmd(const char* arg) {
     }
 
     size_t len = 0;
-    void* data = hanacore::fs::vfs_get_file_alloc(arg, &len);
+    void* data = hanacore::fs::get_file_alloc(arg, &len);
     if (!data) {
         print("cat: file not found\n");
         return;

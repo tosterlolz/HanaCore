@@ -34,7 +34,7 @@ void init_scheduler() {
     uint64_t *rsp_val;
     asm volatile("mov %%rsp, %0" : "=r"(rsp_val));
     main->rsp = rsp_val;
-    main->next = nullptr;
+    main->next = main;  // Single-element circular list
 
     current_task = main;
     task_list = main;
@@ -151,14 +151,15 @@ int create_task(void (*entry)(void)) {
     t->rsp = sp;
     t->kstack = stack;
 
-    // Insert to end of list
+    // Insert into circular list
     if (!task_list) {
         task_list = t;
-        t->next = nullptr;
+        t->next = t;
     } else {
         Task *cur = task_list;
-        while (cur->next) cur = cur->next;
+        while (cur->next && cur->next != task_list) cur = cur->next;
         cur->next = t;
+        t->next = task_list;
     }
 
     log_info("scheduler: created task pid=%d", t->pid);
@@ -250,9 +251,16 @@ int create_task_with_arg(void (*entry)(void*), void* arg) {
     t->rsp = sp;
     t->kstack = stack;
 
-    Task *cur = task_list;
-    while (cur->next) cur = cur->next;
-    cur->next = t;
+    // Insert into circular list
+    if (!task_list) {
+        task_list = t;
+        t->next = t;
+    } else {
+        Task *cur = task_list;
+        while (cur->next && cur->next != task_list) cur = cur->next;
+        cur->next = t;
+        t->next = task_list;
+    }
 
     log_info("scheduler: created task (arg) pid=%d", t->pid);
     return t->pid;
@@ -270,33 +278,63 @@ void schedule_next() {
     // Disable interrupts while mutating the task list to avoid races
     asm volatile ("cli" ::: "memory");
 
-    // Clean up DEAD tasks in the circular list
-    Task *iter_prev = prev;
-    Task *iter = prev->next;
-    while (iter && iter != prev) {
-        if (iter->state != TASK_DEAD) {
+    // Clean up DEAD tasks in the circular list, including prev if it's dead
+    Task *iter_prev = nullptr;
+    Task *iter = task_list;
+    Task *start = task_list;
+    
+    // First pass: find iter_prev (task before prev in the circular list)
+    if (start) {
+        if (start == prev) {
+            // Find the last task in the list
+            Task *tmp = start;
+            while (tmp->next != start) tmp = tmp->next;
+            iter_prev = tmp;
+        } else {
+            while (iter != prev && iter->next != start) {
+                iter = iter->next;
+            }
             iter_prev = iter;
             iter = iter->next;
-            continue;
         }
-        iter_prev->next = iter->next;
-        if (iter == task_list) {
-            task_list = (iter->next == iter) ? nullptr : iter->next;
-        }
-        log_info("scheduler: freeing dead task pid=%d", iter->pid);
-        if (iter->fds) fdtable_destroy(iter->fds, iter->fd_count);
-        if (iter->user_stack) hanacore::mem::kfree(iter->user_stack);
-        if (iter->kstack) hanacore::mem::kfree(iter->kstack);
-        Task *to_free = iter;
-        iter = iter->next;
-        hanacore::mem::kfree(to_free);
-        if (iter == prev) break;
+    }
+
+    // Second pass: clean up DEAD tasks starting from prev
+    if (iter_prev && iter) {
+        Task *iter_start = iter;
+        do {
+            if (iter->state != TASK_DEAD) {
+                iter_prev = iter;
+                iter = iter->next;
+                continue;
+            }
+            Task *next_iter = iter->next;
+            iter_prev->next = next_iter;
+            if (iter == task_list) {
+                task_list = (next_iter == iter) ? nullptr : next_iter;
+            }
+            if (iter == prev) {
+                // The current task is being removed, set prev to the next one
+                prev = next_iter;
+            }
+            log_info("scheduler: freeing dead task pid=%d", iter->pid);
+            if (iter->fds) fdtable_destroy(iter->fds, iter->fd_count);
+            if (iter->user_stack) hanacore::mem::kfree(iter->user_stack);
+            if (iter->kstack) hanacore::mem::kfree(iter->kstack);
+            hanacore::mem::kfree(iter);
+            iter = next_iter;
+        } while (iter && iter != iter_start);
     }
 
     // Re-enable interrupts after list mutation
     asm volatile ("sti" ::: "memory");
 
-    // Find next runnable task (including self if only one remains)
+    // Find next runnable task
+    if (!task_list || !prev) {
+        log_info("scheduler: no task list or current task");
+        return;
+    }
+
     Task *next = prev->next ? prev->next : prev;
     Task *probe_start = next;
     do {

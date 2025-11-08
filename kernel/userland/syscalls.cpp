@@ -156,7 +156,7 @@ extern "C" uint64_t syscall_dispatch(uint64_t num, uint64_t a, uint64_t b, uint6
             if (!path) return (uint64_t)-1;
 
             size_t len = 0;
-            void* data = hanacore::fs::vfs_get_file_alloc(path, &len);
+            void* data = hanacore::fs::get_file_alloc(path, &len);
             if (!data && (flags & O_CREAT)) ramfs_create_file(path);
 
             int fd = fdtable_alloc_fd(tbl, cnt);

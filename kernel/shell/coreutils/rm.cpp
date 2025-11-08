@@ -8,7 +8,7 @@ extern "C" void builtin_rm_cmd(const char* arg) {
         return;
     }
 
-    int rc = hanacore::fs::vfs_unlink(arg);
+    int rc = hanacore::fs::unlink(arg);
     if (rc == 0) {
         print("rm: ok\n");
     } else {

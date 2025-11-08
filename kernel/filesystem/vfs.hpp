@@ -1,48 +1,49 @@
 #pragma once
 
-#include <stdint.h>
 #include <stddef.h>
 
-// Minimal Virtual Filesystem layer (skeleton)
-// Provides a tiny mount registry so special filesystems (procfs/devfs)
-// can be registered and enumerated by tools.
-
-namespace hanacore { namespace fs {
-
-    // Register a mount (fsname must be a persistent string or literal)
-    void vfs_register_mount(const char* fsname, const char* mountpoint);
-
-    // Initialize the vfs subsystem
-    void vfs_init(void);
-
-    // Read a file via VFS: tries registered filesystems (hanafs, fat32...) and
-    // returns a newly allocated buffer with the file contents (caller frees).
-    void* vfs_get_file_alloc(const char* path, size_t* out_len);
-
-    // List directory via VFS. Callback receives each entry name (not full path).
-    int vfs_list_dir(const char* path, void (*cb)(const char* name));
-
-    // Remove an empty directory at the given path. Prefer mounted FS handlers
-    // when appropriate; fall back to the legacy ramfs/hanafs implementation.
-    int vfs_remove_dir(const char* path);
-
-    // Create a file (empty) at the given path. Returns 0 on success.
-    int vfs_create_file(const char* path);
-
-    // Unlink (remove) a file at the given path. Returns 0 on success.
-    int vfs_unlink(const char* path);
-
-    // Make directory at the given path. Returns 0 on success.
-    int vfs_make_dir(const char* path);
-
-    // Write a full file (create or overwrite) with the provided buffer.
-    int vfs_write_file(const char* path, const void* buf, size_t len);
-
-    // List mounts: callback receives a printable line for each mount
-    int vfs_list_mounts(void (*cb)(const char* line));
-
-} }
-
+#ifdef __cplusplus
 extern "C" {
-    int vfs_list_mounts(void (*cb)(const char* line));
+#endif
+
+typedef void (*vfs_dir_cb_t)(const char* name);
+
+#define VFS_TYPE_FILE  0x01
+#define VFS_TYPE_DIR   0x02
+#define VFS_TYPE_OTHER 0x04
+
+void vfs_init(void);
+void vfs_register_mount(const char* fsname, const char* mountpoint);
+int vfs_list_mounts(void (*cb)(const char* line));
+int vfs_list_dir(const char* path, vfs_dir_cb_t cb);
+int vfs_make_dir(const char* path);
+int vfs_remove_dir(const char* path);
+int vfs_create_file(const char* path);
+int vfs_unlink(const char* path);
+int vfs_write_file(const char* path, const void* buf, size_t len);
+void* vfs_get_file_alloc(const char* path, size_t* out_len);
+
+#ifdef __cplusplus
 }
+#endif
+
+#ifdef __cplusplus
+namespace hanacore {
+namespace fs {
+
+inline int list_dir(const char* path, void (*cb)(const char* name)) {
+    return ::vfs_list_dir(path, cb);
+}
+
+inline int make_dir(const char* path) { return ::vfs_make_dir(path); }
+inline int remove_dir(const char* path) { return ::vfs_remove_dir(path); }
+inline int create_file(const char* path) { return ::vfs_create_file(path); }
+inline int unlink(const char* path) { return ::vfs_unlink(path); }
+inline int write_file(const char* path, const void* buf, size_t len) { return ::vfs_write_file(path, buf, len); }
+inline void* get_file_alloc(const char* path, size_t* out_len) { return ::vfs_get_file_alloc(path, out_len); }
+inline void register_mount(const char* fsname, const char* mountpoint) { ::vfs_register_mount(fsname, mountpoint); }
+inline int list_mounts(void (*cb)(const char* line)) { return ::vfs_list_mounts(cb); }
+
+} 
+} 
+#endif

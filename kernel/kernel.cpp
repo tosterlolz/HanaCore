@@ -77,7 +77,7 @@ extern "C" void kernel_main() {
     log_ok("Core subsystems initialized");
     log_info("Build: %s | Version: %s", hanacore::utils::build_date, hanacore::utils::version);
 
-    hanacore::fs::vfs_init();
+    ::vfs_init();
     hanacore::fs::hanafs_init();
     hanacore::fs::procfs_init();
     hanacore::fs::devfs_init();
@@ -114,7 +114,7 @@ extern "C" void kernel_main() {
     size_t fsize = 0;
 
     for (auto path : candidates) {
-        filedata = hanacore::fs::vfs_get_file_alloc(path, &fsize);
+        filedata = ::vfs_get_file_alloc(path, &fsize);
         if (filedata) {
             log_info("Found userland shell: %s", path);
             break;
