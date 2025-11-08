@@ -335,6 +335,15 @@ int snprintf(char *buf, size_t n, const char *fmt, ...) {
     return r;
 }
 
+// Minimal strcat for freestanding kernel
+char* strcat(char* dest, const char* src) {
+    char* d = dest;
+    while (*d) ++d;
+    while ((*d++ = *src++));
+    return dest;
+}
+
+
 
 #ifdef __cplusplus
 } // extern "C"

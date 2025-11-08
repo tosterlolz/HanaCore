@@ -273,7 +273,7 @@ namespace hanacore {
             size_t pos = 0;
             // Initialize TTY and greet
             tty_init();
-            tty_write("Welcome to HanaShell!\n");
+            tty_write("Welcome to HanaCore built-in shell! if you see this, the /bin/hcsh could not start!\n");
             // Register built-in commands to be spawned as tasks (do it once)
             static int builtins_registered = 0;
             if (!builtins_registered) {
@@ -345,7 +345,7 @@ namespace hanacore {
                         continue;
                     }
 
-                    if (strcmp(cmd, "ls") == 0) { char path[256]; build_path(path, sizeof(path), arg); spawn_registered_cmd("ls", path); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "ls") == 0) { char path[256]; build_path(path, sizeof(path), arg); spawn_registered_cmd("ls", path); hanacore::scheduler::sched_yield(); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "lsblk") == 0) {
                         spawn_registered_cmd("lsblk", arg);
                         pos=0; print_prompt(); continue;

@@ -636,6 +636,27 @@ int fat32_init_from_ata() {
     cluster_begin_lba    = bpb.RsvdSecCnt + bpb.NumFATs * bpb.FATSz32;
     root_dir_cluster     = bpb.RootClus;
 
+    // Basic validation of BPB values (mirror checks from init_from_memory)
+    if (bytes_per_sector == 0 || bytes_per_sector > 4096) {
+        char tmp[160];
+        snprintf(tmp, sizeof(tmp), "[FAT32] init_from_ata: unsupported bytes_per_sector=%u", bytes_per_sector);
+        hanacore::utils::log_info_cpp(tmp);
+        // dump first few bytes for diagnostics
+        char hex[128]; int off = 0;
+        for (int i = 0; i < 32; ++i) off += snprintf(hex + off, sizeof(hex) - off, "%02X ", (unsigned)sector[i]);
+        hanacore::utils::log_info_cpp(hex);
+        return -1;
+    }
+    if (sectors_per_cluster == 0 || sectors_per_cluster > 128) {
+        char tmp[160];
+        snprintf(tmp, sizeof(tmp), "[FAT32] init_from_ata: invalid sectors_per_cluster=%u", sectors_per_cluster);
+        hanacore::utils::log_info_cpp(tmp);
+        char hex[128]; int off = 0;
+        for (int i = 0; i < 32; ++i) off += snprintf(hex + off, sizeof(hex) - off, "%02X ", (unsigned)sector[i]);
+        hanacore::utils::log_info_cpp(hex);
+        return -1;
+    }
+
     fat32_ready = true;
 
     // Mark as mounted from ATA device (drive 0)
@@ -647,6 +668,8 @@ int fat32_init_from_ata() {
                      bytes_per_sector, sectors_per_cluster, root_dir_cluster);
         hanacore::utils::log_ok_cpp(tmp);
     }
+    // Register FAT32 as root mount so / paths resolve into the mounted device
+    vfs_register_mount("fat32", "/");
     return 0;
 }
 
@@ -692,6 +715,10 @@ int fat32_init_from_memory(const void* data, size_t size) {
     mounted_drive = 1;
     // default name when caller doesn't supply a path
     snprintf(mounted_module_name, sizeof(mounted_module_name), "<memory>");
+
+    // Register with VFS as the root filesystem so paths like /bin are served
+    // directly from this FAT32 instance when mounted as a module image.
+    vfs_register_mount("fat32", "/");
 
     return 0;
 }

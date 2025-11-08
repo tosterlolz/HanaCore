@@ -30,7 +30,7 @@ int strcmp(const char* a, const char* b);
 int vsnprintf(char* str, size_t size, const char* format, va_list ap);
 int sprintf(char* str, const char* format, ...);
 int snprintf(char* str, size_t size, const char* format, ...);
-
+char* strcat(char* dest, const char* src);
 // ===== Conversion functions =====
 int atoi(const char* str);
 

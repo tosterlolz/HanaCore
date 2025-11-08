@@ -32,20 +32,12 @@ $CC -ffreestanding -nostdlib -nostartfiles -static \
 cp -f "$OUT_DIR/hanabox.elf" "$ROOTFS_SRC/bin/hanabox"
 echo "Done: $ROOTFS_SRC/bin/hanabox"
 
-echo "Building hcsh user program..."
-$CC -ffreestanding -nostdlib -nostartfiles -static \
-    -o "$OUT_DIR/hcsh.elf" \
-    userland/crt0.S userland/libhana.c userland/hcsh.c
-cp -f "$OUT_DIR/hcsh.elf" "$ROOTFS_SRC/bin/hcsh"
-echo "Done: $ROOTFS_SRC/bin/hcsh"
-
-echo "Building hcsh (new userland shell) program..."
+echo "Building hcsh program..."
 $CC -ffreestanding -nostdlib -nostartfiles -static \
     -o "$OUT_DIR/hcsh_user.elf" \
     userland/crt0.S userland/libhana.c userland/shell/hcsh.c
-mkdir -p "$ROOTFS_SRC/userland/shell"
-cp -f "$OUT_DIR/hcsh_user.elf" "$ROOTFS_SRC/userland/shell/hcsh"
-echo "Done: $ROOTFS_SRC/userland/shell/hcsh"
+cp -f "$OUT_DIR/hcsh_user.elf" "$ROOTFS_SRC/bin/hcsh"
+echo "Done: $ROOTFS_SRC/bin/hcsh"
 
 # Locate an ISO creation tool
 ISO_TOOL=""

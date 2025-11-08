@@ -1,38 +1,59 @@
 #include "../../filesystem/vfs.hpp"
 #include <stddef.h>
+#include <cstring>
+#include "../../tty/tty.hpp"
 
-extern "C" void print(const char*);
-// HanaFS doesn't provide the FAT32 progress hook; keep listing simple.
+extern "C" {
+    void tty_write(const char*);
+}
 
-// Callback for fat32_list_dir
-static void ls_cb(const char* name) {
+static const char* ls_base_dir = nullptr;
+
+static void ls_cb(const char* name, int is_dir) {
     if (!name) return;
 
-    // Copy safely into a small local buffer
-    char tmp[64];
-    size_t i = 0;
-    while (i + 1 < sizeof(tmp) && name[i]) {
-        tmp[i] = name[i];
-        ++i;
+    char full[256];
+    size_t blen = strlen(ls_base_dir);
+    if (blen + strlen(name) + 2 < sizeof(full)) {
+        strcpy(full, ls_base_dir);
+        if (blen > 1 && full[blen-1] != '/') strcat(full, "/");
+        strcat(full, name);
+    } else {
+        strcpy(full, name);
     }
-    tmp[i] = '\0';
 
-    print(tmp);
-    print("\n");
+    if (is_dir) {
+        tty_write("\x1b[34m"); // blue
+        tty_write(name);
+        tty_write("/\x1b[0m  ");
+    } else {
+        tty_write(name);
+        tty_write("  ");
+    }
 }
 
 extern "C" void builtin_ls_cmd(const char* path) {
     if (!path) {
-        print("ls: null path\n");
+        tty_write("ls: null path\n");
         return;
     }
 
-    print("Listing directory: ");
-    print(path);
-    print("\n");
+    tty_write("Listing directory: ");
+    tty_write(path);
+    tty_write("\n");
 
-    int rc = hanacore::fs::vfs_list_dir(path, ls_cb);
+    ls_base_dir = path;
+
+    int rc = hanacore::fs::vfs_list_dir(path, [](const char* name, int type) {
+        int is_dir = (type & VFS_TYPE_DIR) ? 1 : 0;
+        ls_cb(name, is_dir);
+    });
+
+    ls_base_dir = nullptr;
+
     if (rc != 0) {
-        print("ls: failed to list directory (check mount or cluster)\n");
+        tty_write("\nls: failed to list directory or directory is empty\n");
+    } else {
+        tty_write("\n");
     }
 }

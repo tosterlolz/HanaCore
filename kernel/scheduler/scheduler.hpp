@@ -34,6 +34,10 @@ struct Task {
 	void *user_entry;    // user-mode RIP
 	void *user_stack;    // pointer to user-mode stack bottom (virtual)
 	size_t user_stack_size;
+
+	// Kernel-mode stack buffer pointer (allocated at task creation). Used
+	// so the scheduler can free the stack when the task is destroyed.
+	void *kstack;
 };
 
 // Globals for single-CPU scheduler
