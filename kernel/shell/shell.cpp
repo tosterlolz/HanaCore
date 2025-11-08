@@ -28,6 +28,7 @@ extern "C" {
     void builtin_fetch_cmd(const char* arg);
     void builtin_cat_cmd(const char* arg);
     void builtin_mount_cmd(const char* arg);
+    void builtin_wm_cmd(const char* arg);
 }
 
 static char cwd[256] = "/";
@@ -285,7 +286,8 @@ namespace hanacore {
                 register_shell_cmd("touch", builtin_touch_cmd);
                 register_shell_cmd("rm", builtin_rm_cmd);
                 register_shell_cmd("cat", builtin_cat_cmd);
-                    register_shell_cmd("mount", builtin_mount_cmd);
+                register_shell_cmd("mount", builtin_mount_cmd);
+                register_shell_cmd("wm", builtin_wm_cmd);
                 builtins_registered = 1;
             }
             print_prompt();
@@ -316,15 +318,6 @@ namespace hanacore {
                     for (size_t i = 0; i < pos; ++i) {
                         if (buf[i] == '|') {
                             tty_write("Piping is not supported yet\n");
-                    if (strcmp(cmd, "ls") == 0) { char path[256]; build_path(path, sizeof(path), arg); { int pid = spawn_registered_cmd("ls", path); (void)pid; } pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "lsblk") == 0) { { int pid = spawn_registered_cmd("lsblk", NULL); (void)pid; } pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "format") == 0) { { int pid = spawn_registered_cmd("format", arg); (void)pid; } pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "install") == 0) { { int pid = spawn_registered_cmd("install", arg); (void)pid; } pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "mkdir") == 0) { { int pid = spawn_registered_cmd("mkdir", arg); (void)pid; } pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "rmdir") == 0) { { int pid = spawn_registered_cmd("rmdir", arg); (void)pid; } pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "touch") == 0) { { int pid = spawn_registered_cmd("touch", arg); (void)pid; } pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "rm") == 0) { { int pid = spawn_registered_cmd("rm", arg); (void)pid; } pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "cat") == 0) { char path[256]; build_path(path, sizeof(path), arg); { int pid = spawn_registered_cmd("cat", path); (void)pid; } pos=0; print_prompt(); continue; }
                         }
                     }
 
@@ -352,24 +345,19 @@ namespace hanacore {
                         continue;
                     }
 
-                    if (strcmp(cmd, "ls") == 0) { char path[256]; build_path(path, sizeof(path), arg); builtin_ls_cmd(path); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "ls") == 0) { char path[256]; build_path(path, sizeof(path), arg); spawn_registered_cmd("ls", path); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "lsblk") == 0) {
-                        // Use the registered builtin spawn path which ensures the
-                        // created task cleans itself up correctly (shell_builtin_wrapper).
                         spawn_registered_cmd("lsblk", arg);
-                        // Do not yield here: spawn the task and return to the shell
-                        // prompt immediately. The scheduler will run the new task
-                        // when it gets CPU time.
                         pos=0; print_prompt(); continue;
                     }
-                    if (strcmp(cmd, "format") == 0) { builtin_format_cmd(arg); pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "install") == 0) { builtin_install_cmd(arg); pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "mkdir") == 0) { builtin_mkdir_cmd(arg); pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "rmdir") == 0) { builtin_rmdir_cmd(arg); pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "touch") == 0) { builtin_touch_cmd(arg); pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "rm") == 0) { builtin_rm_cmd(arg); pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "cat") == 0) { char path[256]; build_path(path, sizeof(path), arg); builtin_cat_cmd(path); pos=0; print_prompt(); continue; }
-                    if (strcmp(cmd, "mount") == 0) { { int pid = spawn_registered_cmd("mount", arg); (void)pid; } pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "format") == 0) { spawn_registered_cmd("format", arg); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "install") == 0) { spawn_registered_cmd("install", arg); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "mkdir") == 0) { spawn_registered_cmd("mkdir", arg); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "rmdir") == 0) { spawn_registered_cmd("rmdir", arg); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "touch") == 0) { spawn_registered_cmd("touch", arg); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "rm") == 0) { spawn_registered_cmd("rm", arg); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "cat") == 0) { char path[256]; build_path(path, sizeof(path), arg); spawn_registered_cmd("cat", path); pos=0; print_prompt(); continue; }
+                    if (strcmp(cmd, "mount") == 0) { spawn_registered_cmd("mount", arg); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "pwd") == 0) { tty_write(cwd); tty_write("\n"); pos=0; print_prompt(); continue; }
                     if (strcmp(cmd, "clear") == 0) { clear_screen(); pos=0; print_prompt(); continue; }
             		if (strcmp(cmd, "echo") == 0) { if(arg && *arg) tty_write(arg); tty_write("\n"); pos=0; print_prompt(); continue; }
@@ -389,8 +377,13 @@ namespace hanacore {
 						print("  clear              Clear the screen\n");
 						print("  echo <text>        Print text to console\n");
                         print("  mount <src> <dst>  Mount filesystem from source to destination\n");
+                        print("  wm                 Start a simple window manager\n");
 						print("  help               Show this help message\n"); pos=0; print_prompt(); continue;
 					}
+                    if (strcmp(cmd, "wm") == 0) {
+                        builtin_wm_cmd(arg);
+                        pos=0; print_prompt(); continue;
+                    }
 
 
                     // Execute /bin/<cmd>

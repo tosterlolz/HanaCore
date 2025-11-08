@@ -332,10 +332,10 @@ void schedule_next() {
 
     if (!prev->rsp || !next->rsp) return;
 
-    log_hex64("scheduler: switching prev", (uint64_t)prev);
-    log_hex64("scheduler: prev->rsp", (uint64_t)prev->rsp);
-    log_hex64("scheduler: next", (uint64_t)next);
-    log_hex64("scheduler: next->rsp", (uint64_t)next->rsp);
+    // log_hex64("scheduler: switching prev", (uint64_t)prev);
+    // log_hex64("scheduler: prev->rsp", (uint64_t)prev->rsp);
+    // log_hex64("scheduler: next", (uint64_t)next);
+    // log_hex64("scheduler: next->rsp", (uint64_t)next->rsp);
 
     // Perform the context switch: save previous stack pointer and load next.
     // context_switch is declared at file scope above.

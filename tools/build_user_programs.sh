@@ -39,6 +39,14 @@ $CC -ffreestanding -nostdlib -nostartfiles -static \
 cp -f "$OUT_DIR/hcsh.elf" "$ROOTFS_SRC/bin/hcsh"
 echo "Done: $ROOTFS_SRC/bin/hcsh"
 
+echo "Building hcsh (new userland shell) program..."
+$CC -ffreestanding -nostdlib -nostartfiles -static \
+    -o "$OUT_DIR/hcsh_user.elf" \
+    userland/crt0.S userland/libhana.c userland/shell/hcsh.c
+mkdir -p "$ROOTFS_SRC/userland/shell"
+cp -f "$OUT_DIR/hcsh_user.elf" "$ROOTFS_SRC/userland/shell/hcsh"
+echo "Done: $ROOTFS_SRC/userland/shell/hcsh"
+
 # Locate an ISO creation tool
 ISO_TOOL=""
 if command -v xorriso >/dev/null 2>&1; then ISO_TOOL="xorriso"; fi

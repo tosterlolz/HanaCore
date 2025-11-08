@@ -23,6 +23,8 @@ build: build-kernel
 	cmake --build build/cmake --target hello_module_install || true; \
 	# Collect kernel and limine files into iso_root
 	cmake --build build/cmake --target install_iso || true; \
+	# Build user programs and populate rootfs_src so they are included in the ISO
+	./tools/build_user_programs.sh || true; \
 	# Ensure boot dir exists
 	mkdir -p build/cmake/iso_root/boot; \
 	# Create ISO from CMake staging area (xorriso/genisoimage/mkisofs optional)
@@ -41,6 +43,14 @@ build: build-kernel
 		echo "⚠️  ISO not created. Please install one of: xorriso, genisoimage, or mkisofs"; \
 		exit 1; \
 	fi
+
+# Build only user programs and package them into an ISO (fast path)
+build-userprograms:
+	@echo "Building user programs and creating userprogram.iso..."
+	./tools/build_user_programs.sh
+
+install-userprograms: build-userprograms
+	@echo "🌸 Built userprogram.iso at build/userprogram.iso"
 
 run: build
 	@echo "🌸 Starting HanaCore in QEMU..."

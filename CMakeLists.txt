@@ -4,6 +4,42 @@ project(HanaCore LANGUAGES C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
+# Optional: enable Undefined Behavior Sanitizer (UBSAN) for subprojects.
+# This lets users enable UBSAN across the tree with -DENABLE_UBSAN=ON.
+option(ENABLE_UBSAN "Enable Undefined Behavior Sanitizer (UBSAN)" OFF)
+# UBSAN for the kernel is experimental in a freestanding environment and
+# requires linking the sanitizer runtime into the kernel which often fails.
+# Provide a separate switch so users opt-in explicitly.
+option(ENABLE_UBSAN_KERNEL "Enable UBSAN instrumentation for the kernel (experimental)" OFF)
+
+# Build a host-side UBSAN test for filesystem code (avoids linking sanitizer
+# runtime into freestanding kernel). Enable with -DENABLE_UBSAN_FS=ON.
+option(ENABLE_UBSAN_FS "Build a host-side UBSAN test for filesystem code" OFF)
+
+# If requested, add a small host executable that builds a subset of the
+# filesystem sources together with lightweight stubs so the code can be
+# instrumented and run under UBSAN on the host. This avoids kernel
+# freestanding linking issues while letting you check filesystem code.
+if(ENABLE_UBSAN_FS)
+  message(STATUS "Configuring filesystem UBSAN host test (filesystem_ubsan)")
+  set(FS_UBSAN_SRCS
+    ${CMAKE_SOURCE_DIR}/tools/fs_ubsan/main.cpp
+    ${CMAKE_SOURCE_DIR}/tools/fs_ubsan/stubs.cpp
+    ${CMAKE_SOURCE_DIR}/kernel/filesystem/hanafs.cpp
+    ${CMAKE_SOURCE_DIR}/kernel/filesystem/vfs.cpp
+    ${CMAKE_SOURCE_DIR}/kernel/filesystem/devfs.cpp
+    ${CMAKE_SOURCE_DIR}/kernel/filesystem/ramfs.cpp
+  )
+
+  add_executable(filesystem_ubsan ${FS_UBSAN_SRCS})
+  set_target_properties(filesystem_ubsan PROPERTIES
+    OUTPUT_NAME "filesystem_ubsan"
+  )
+  # Enable UBSAN instrumentation for the host test and link sanitizer runtime
+  target_compile_options(filesystem_ubsan PRIVATE -fsanitize=undefined -fno-sanitize-recover=undefined -g)
+  target_link_options(filesystem_ubsan PRIVATE -fsanitize=undefined)
+endif()
+
 # Allow user to override compiler (e.g. use x86_64-elf- toolchain)
 if(DEFINED ENV{CROSS_COMPILE} AND NOT CMAKE_C_COMPILER)
   set(CROSS_PREFIX $ENV{CROSS_COMPILE})

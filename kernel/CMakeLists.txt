@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(HanaCoreKernel LANGUAGES C CXX ASM)
 
+# Optional: enable Undefined Behavior Sanitizer (UBSAN) instrumentation.
+# UBSAN inserts runtime checks for undefined behavior; this is useful for
+# debugging but may increase binary size and change runtime behaviour. It
+# is off by default. Enable with -DENABLE_UBSAN=ON when configuring.
+option(ENABLE_UBSAN "Enable Undefined Behavior Sanitizer (UBSAN)" OFF)
+
 # ----------------------------------------
 # C++20 freestanding kernel with coroutines
 # ----------------------------------------
@@ -73,6 +79,17 @@ target_compile_options(kernel PRIVATE
         -fno-pic
         -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 )
+
+if(ENABLE_UBSAN AND ENABLE_UBSAN_KERNEL)
+        message(STATUS "ENABLING UBSAN instrumentation for kernel target (experimental)")
+        # Instrument for undefined behavior and make sanitizer abort on error
+        target_compile_options(kernel PRIVATE -fsanitize=undefined -fno-sanitize-recover=undefined -g)
+        # Link with UBSAN runtime. Note: linking sanitizer runtime into a
+        # freestanding kernel may not be fully supported and frequently fails
+        # due to missing runtime support; enable only if you know what you're doing.
+        target_link_options(kernel PRIVATE -fsanitize=undefined)
+else()
+endif()
 
 # ----------------------------------------
 # C++ specific options (for freestanding + coroutines)

@@ -195,10 +195,41 @@ extern "C" void kernel_main() {
 
             size_t fsize = 0;
 
-            int shell_pid = hanacore::scheduler::create_task((void(*)(void))hanacore::shell::shell_main);
-            log_info("kernel: created built-in shell task");
-            log_hex64("kernel: shell pid", (uint64_t)shell_pid);
+            // Try to run a userland shell as a ring-3 task. Check preferred
+            // location `/userland/shell/hcsh` first, then fall back to `/bin/hcsh`.
+            void* filedata = NULL;
+            size_t user_size = 0;
+            const char* candidates[] = { "/userland/shell/hcsh", "/bin/hcsh", "/bin/sh" };
+            for (size_t ci = 0; ci < sizeof(candidates)/sizeof(candidates[0]); ++ci) {
+                filedata = hanacore::fs::vfs_get_file_alloc(candidates[ci], &user_size);
+                if (filedata) {
+                    log_info("kernel: found userland shell at %s", candidates[ci]);
+                    break;
+                }
+            }
+
+            if (filedata) {
+                void* entry = elf64_load_from_memory(filedata, user_size);
+                if (entry) {
+                    // Spawn as a user task with a modest user stack (128 KiB)
+                    int pid = hanacore::scheduler::create_user_task(entry, 128 * 1024);
+                    if (pid > 0) {
+                        log_info("kernel: spawned userland shell as ring-3 task");
+                        log_hex64("kernel: shell pid", (uint64_t)pid);
+                        hanacore::mem::kfree(filedata);
+                        hanacore::scheduler::schedule_next();
+                        for (;;) __asm__ volatile("hlt");
+                    }
+                }
+                // cleanup if load failed
+                hanacore::mem::kfree(filedata);
+            }
+
+            // int shell_pid = hanacore::scheduler::create_task((void(*)(void))hanacore::shell::shell_main);
+            // log_info("kernel: created built-in shell task");
+            // log_hex64("kernel: shell pid", (uint64_t)shell_pid);
             // Switch to the newly created task and let scheduler drive execution.
             hanacore::scheduler::schedule_next();
+            log_fail("kernel has no tasks to schedule! halting!");
             for (;;) __asm__ volatile("hlt");
 }

@@ -20,14 +20,27 @@ namespace hanacore { namespace fs {
 
     void vfs_init(void) {
         mount_count = 0;
-        for (int i = 0; i < 16; ++i) { mounts[i].fsname = NULL; mounts[i].mountpoint = NULL; }
+        for (int i = 0; i < 16; ++i) {
+            if (mounts[i].mountpoint) {
+                // free any previously allocated mountpoint strings
+                hanacore::mem::kfree((void*)mounts[i].mountpoint);
+            }
+            mounts[i].fsname = NULL;
+            mounts[i].mountpoint = NULL;
+        }
     }
 
     void vfs_register_mount(const char* fsname, const char* mountpoint) {
         if (!fsname || !mountpoint) return;
         if (mount_count >= 16) return;
+        // Copy mountpoint into kernel heap so the pointer remains valid after
+        // the caller (often a temporary stack buffer in the shell) returns.
+        size_t mlen = strlen(mountpoint) + 1;
+    char* mcopy = (char*)hanacore::mem::kmalloc(mlen);
+    if (!mcopy) return;
+        for (size_t i = 0; i < mlen; ++i) mcopy[i] = mountpoint[i];
         mounts[mount_count].fsname = fsname;
-        mounts[mount_count].mountpoint = mountpoint;
+        mounts[mount_count].mountpoint = mcopy;
         mount_count++;
     }
 

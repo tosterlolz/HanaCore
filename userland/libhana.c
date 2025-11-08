@@ -45,3 +45,9 @@ void hana_exit(int status) {
     hana_syscall(2, (long)status, 0, 0, 0, 0, 0);
     for(;;) __asm__ volatile("hlt");
 }
+
+int hana_chdir(const char *path) {
+    (void)path;
+    /* Not implemented in kernel: return -1 to indicate failure. */
+    return -1;
+}

@@ -1,6 +1,7 @@
 #include "../../filesystem/vfs.hpp"
 #include "../../filesystem/devfs.hpp"
-#include "../../filesystem/vfs.hpp"
+#include "../../filesystem/hanafs.hpp"
+#include "../../filesystem/fat32.hpp"
 #include "../../libs/libc.h"
 #include <stddef.h>
 #include <string.h>
@@ -31,12 +32,19 @@ extern "C" void builtin_lsblk_cmd(const char* unused) {
     // Header
     print("NAME        MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS\n");
 
-    // Collect device node names from the pseudo `devfs` (no raw ATA probing)
-    hanacore::fs::devfs_list_dir("/dev", print_dev_entry);
+    // Collect device node names via VFS so any registered devfs handler is
+    // invoked (safer than calling devfs directly and keeps behaviour
+    // consistent with other directory listings).
+    int dcrc = hanacore::fs::vfs_list_dir("/dev", print_dev_entry);
+    if (dcrc != 0) {
+        print("lsblk: failed to list /dev\n");
+    }
 
-    // Now print mounted filesystems collected from the VFS registry only
-    // (avoid directly calling backend-specific mount enumerators here to
-    // reduce risk of invoking complex backend code while listing).
+    // Now print mounted filesystems. We include mounts registered via VFS
+    // (procfs/devfs/explicit mounts) and also query backend registries
+    // (HanaFS and FAT32) so `lsblk` shows both pseudo and block mounts.
     print("\nMOUNTPOINTS:\n");
     hanacore::fs::vfs_list_mounts(print_mount_line);
+    hanacore::fs::hanafs_list_mounts(print_mount_line);
+    hanacore::fs::fat32_list_mounts(print_mount_line);
 }
