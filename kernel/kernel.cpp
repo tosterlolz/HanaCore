@@ -8,6 +8,9 @@
 #include "utils/logger.hpp"
 #include "filesystem/fat32.hpp"
 #include "filesystem/hanafs.hpp"
+#include "filesystem/vfs.hpp"
+#include "filesystem/procfs.hpp"
+#include "filesystem/devfs.hpp"
 #include <stdint.h>
 
 // C wrapper for auto-mounting letter-encoded modules (defined in fat32.cpp)
@@ -121,49 +124,29 @@ extern "C" void kernel_main() {
     log_info("System ready.");
     log_info("Kernel build: %s", hanacore::utils::build_date);
     log_info("Kernel version: %s", hanacore::utils::version);
-    // Try to initialize fat32 rootfs from a module named "rootfs.img"
-    // If an embedded rootfs was linked into the kernel, initialize from it first.
+    // Do NOT auto-initialize FAT32 from Limine modules at boot. Mounting
+    // filesystems (FAT32, HanaFS persistence, ISO images) should be an
+    // explicit user action via the `mount` builtin. We still log available
+    // modules for diagnostics but avoid auto-mount side-effects here.
     if (module_request.response) {
         volatile struct limine_module_response* mresp = module_request.response;
-        // Log module count for diagnostics
         if (mresp->module_count == 0) {
             log_info("No Limine modules found");
         } else {
-            char tmp[64];
-            // simple print of module count
-            log_info("Limine modules: %u", (unsigned) mresp->module_count);
-        }
-        for (uint64_t i = 0; i < mresp->module_count; ++i) {
-            volatile struct limine_file* mod = mresp->modules[i];
-            const char* path = (const char*)(uintptr_t)mod->path;
-            if (path && limine_hhdm_request.response) {
-                uint64_t hoff = limine_hhdm_request.response->offset;
-                if ((uint64_t)path < hoff) path = (const char*)((uintptr_t)path + hoff);
-            }
-            if (path && (ends_with(path, "rootfs.img") || ends_with(path, "rootfs.bin"))) {
-                // Prepare module virtual address (respect HHDM offset)
-                uintptr_t mod_addr = (uintptr_t)mod->address;
-                const void* mod_virt = (const void*)mod_addr;
-                if (limine_hhdm_request.response) {
-                    uint64_t off = limine_hhdm_request.response->offset;
-                    if ((uint64_t)mod_addr < off) mod_virt = (const void*)(off + mod_addr);
-                }
-                // Initialize FAT32 from the in-memory module image. Only stop
-                // searching if initialization succeeded; otherwise continue and
-                // try other modules (avoid aborting on a single failure).
-                if (hanacore::fs::fat32_init_from_memory(mod_virt, (size_t)mod->size) == 0) {
-                    hanacore::utils::log_info_cpp("[kernel] rootfs module initialized from memory");
-                    break;
-                } else {
-                    hanacore::utils::log_info_cpp("[kernel] failed to init rootfs module, trying next module if any");
-                }
-            }
+            log_info("Limine modules: %u (not auto-mounted)", (unsigned)mresp->module_count);
         }
     }
 
-    // Initialize HanaFS
-    hanacore::fs::hanafs_init();
-    log_info("[kernel] HanaFS initialized.");
+    // Initialize basic VFS and pseudo-filesystems
+    hanacore::fs::vfs_init();
+    log_info("[kernel] VFS initialized.");
+    // Initialize HanaFS in-memory root so /, /dev, /proc exist for tools.
+    if (hanacore::fs::hanafs_init() == 0) {
+        log_info("[kernel] HanaFS initialized (in-memory)");
+    }
+    // register procfs and devfs
+    hanacore::fs::procfs_init();
+    hanacore::fs::devfs_init();
 
     // Networking disabled in this build (net subsystem removed).
 
@@ -211,32 +194,7 @@ extern "C" void kernel_main() {
             log_info("kernel: scheduler initialized");
 
             size_t fsize = 0;
-            void* fdata = hanacore::fs::hanafs_get_file_alloc("/bin/hcsh", &fsize);
-            if (fdata && fsize > 0) {
-                log_info("kernel: found /bin/hcsh in HanaFS, loading ELF");
-                void* entry = elf64_load_from_memory(fdata, fsize);
-                // free original buffer; elf loader copies segments into bump allocator
-                hanacore::mem::kfree(fdata);
-                if (entry) {
-                    // Spawn ELF as a user-mode task (ring-3). This will perform
-                    // a minimal iret-based transition; full address-space
-                    // isolation (VMM) is TODO.
-                    int shell_pid = hanacore::scheduler::create_user_task(entry, 64 * 1024);
-                    log_info("kernel: spawned /bin/hcsh as task");
-                    log_hex64("kernel: shell pid", (uint64_t)shell_pid);
-                    // Switch to the newly created task
-                    hanacore::scheduler::schedule_next();
-                    for (;;) __asm__ volatile("hlt");
-                } else {
-                    log_info("kernel: ELF load failed for /bin/hcsh; falling back to built-in shell");
-                }
-            } else {
-                log_info("kernel: /bin/hcsh not found in HanaFS; falling back to built-in shell");
-            }
 
-            // Fallback: spawn built-in shell as a task and switch to it. Do not
-            // also call shell_main() inline — that would start two shells.
-            print("Starting built-in shell as task.\n");
             int shell_pid = hanacore::scheduler::create_task((void(*)(void))hanacore::shell::shell_main);
             log_info("kernel: created built-in shell task");
             log_hex64("kernel: shell pid", (uint64_t)shell_pid);

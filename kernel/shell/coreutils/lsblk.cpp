@@ -1,5 +1,8 @@
 #include "../../drivers/ide.hpp"
 #include "../../filesystem/ext3.hpp"
+#include "../../filesystem/hanafs.hpp"
+#include "../../filesystem/fat32.hpp"
+#include "../../filesystem/vfs.hpp"
 #include "../../libs/libc.h"
 #include <stddef.h>
 
@@ -14,30 +17,33 @@ static void lsblk_cb(const char* line) {
     print("\x1b[0m\n");
 }
 
-extern "C" void builtin_lsblk_cmd(const char* unused) {
-    // Report ATA master availability and size
-    int32_t secs = ata_get_sector_count();
-    if (secs > 0) {
-        char buf[128];
-        // report size in sectors and approximate MiB
-        int32_t mib = secs / 2048; // 2048 sectors * 512 = 1 MiB
-        snprintf(buf, sizeof(buf), "ATA master: %u sectors (~%u MiB)", (unsigned)secs, (unsigned)mib);
-        print(buf); print("\n");
-    } else {
-        print("ATA master: no device detected\n");
-    }
+// internal flag used by callbacks to indicate we printed at least one mount
+static int lsblk_found_mounts = 0;
 
-    // Report ATA slave (possible CD-ROM) availability. Avoid probing sectors
-    // directly here — raw sector reads during device enumeration have caused
-    // VM instability. If the slave reports a sector count, show it; otherwise
-    // report absent and ask the user to mount explicitly if needed.
-    int32_t slave_secs = ata_get_sector_count_drive(1);
-    if (slave_secs > 0) {
-        char buf[128];
-        int32_t mib = slave_secs / 2048;
-        snprintf(buf, sizeof(buf), "ATA slave: %u sectors (~%u MiB)", (unsigned)slave_secs, (unsigned)mib);
-        print(buf); print("\n");
-    } else {
-        print("ATA slave: no device detected (probe skipped). Use 'mount' to mount devices manually.\n");
+static void lsblk_mount_cb(const char* line) {
+    if (!line) return;
+    lsblk_found_mounts = 1;
+    // reuse the pretty-print callback
+    lsblk_cb(line);
+}
+
+extern "C" void builtin_lsblk_cmd(const char* unused) {
+    // Probe of raw ATA sectors can destabilize some virtual machines
+    // (causes VM crashes in VirtualBox). Skip direct probing here and
+    // instead instruct the user to mount devices explicitly using the
+    // `mount` builtin. The VFS mount list below will show any mounted
+    // devices.
+    print("ATA master: probe skipped (use 'mount' to attach devices)\n");
+    print("ATA slave: probe skipped (use 'mount' to attach devices)\n");
+
+    // Print VFS-registered mounts only. Avoid probing ATA or device hardware
+    // here — direct ATA probing destabilizes some VMs. The `mount` builtin
+    // should be used to attach devices explicitly; those mounts will be
+    // visible via the VFS registry.
+    lsblk_found_mounts = 0;
+    hanacore::fs::vfs_list_mounts(lsblk_mount_cb);
+
+    if (!lsblk_found_mounts) {
+        print("[NO FS]\n");
     }
 }

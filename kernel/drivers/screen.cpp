@@ -5,8 +5,8 @@
 #include "../mem/heap.hpp"
 
 extern "C" {
-#include "../../flanterm/src/flanterm.h"
-#include "../../flanterm/src/flanterm_backends/fb.h"
+#include "../../third_party/flanterm/src/flanterm.h"
+#include "../../third_party/flanterm/src/flanterm_backends/fb.h"
 }
 
 #include <stdarg.h>

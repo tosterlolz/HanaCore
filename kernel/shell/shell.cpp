@@ -1,6 +1,9 @@
 #include "shell.hpp"
 #include "../filesystem/ext3.hpp"
 #include "../filesystem/hanafs.hpp"
+#include "../filesystem/ramfs.hpp"
+#include "../filesystem/vfs.hpp"
+#include "../filesystem/fat32.hpp"
 #include "../userland/elf_loader.hpp"
 #include "../drivers/screen.hpp"
 #include "../scheduler/scheduler.hpp"
@@ -103,7 +106,10 @@ extern "C" void builtin_mount_cmd(const char* arg) {
     if (!*d) { print("Usage: mount <src> <dst>\n"); return; }
 
     char src[128]; size_t i=0;
-    for (; i < sizeof(src)-1 && i < slen; ++i) src[i] = s[i]; src[i] = '\0';
+    for (; i < sizeof(src)-1 && i < slen; ++i) {
+        src[i] = s[i];
+    }
+    src[i] = '\0';
 
     char dst[256]; // expand relative to cwd
     // build_path expects the argument token (relative or absolute)
@@ -112,16 +118,25 @@ extern "C" void builtin_mount_cmd(const char* arg) {
     // Basic heuristics: cdrom -> hanafs ISO mount (delegate to hanafs::fs::mount)
     if (strncmp(src, "/dev/cdrom", 9) == 0 || strstr(src, "cdrom") != NULL) {
         print("Mounting CD-ROM via HanaFS ISO mount...\n");
-        int rc = hanafs::fs::mount(1, dst);
+    int rc = ramfs_mount_iso_drive(1, dst);
         if (rc == 0) print("Mounted CD-ROM to "); else print("Mount failed: ");
         print(dst); print("\n");
         return;
     }
 
-    // ATA/SD devices -> try ext3 mount (drive 0 for primary ATA)
+    // ATA/SD devices -> try FAT32 mount first (legacy rootfs), then ext3 stub.
     if (strncmp(src, "/dev/sda", 8) == 0 || strncmp(src, "/dev/hda", 8) == 0 || strstr(src, "sda") != NULL) {
-        print("Mounting device as ext3 (stub)...\n");
-        int rc = ext3::mount(0, dst);
+        print("Attempting FAT32 mount from ATA...\n");
+    int rc = fat32_mount_ata_master(0);
+        if (rc == 0) {
+            // Register the vfs mount so the mounted filesystem appears at dst
+            hanacore::fs::vfs_register_mount("fat32", dst);
+            print("Mounted FAT32 device to "); print(dst); print("\n");
+            return;
+        }
+        // Fallback to ext3 (stub) if FAT32 mount failed
+        print("FAT32 mount failed, trying ext3 (stub)...\n");
+        rc = ext3::mount(0, dst);
         if (rc == 0) print("Mounted device to "); else print("Mount failed: ");
         print(dst); print("\n");
         return;
@@ -130,7 +145,11 @@ extern "C" void builtin_mount_cmd(const char* arg) {
     // Fallback: attempt hanafs ISO mount with numeric drive if given like '1'
     if (isdigit((unsigned char)src[0])) {
         int drv = src[0] - '0';
-        int rc = hanafs::fs::mount(drv, dst);
+    int rc = ramfs_mount_iso_drive(drv, dst);
+    if (rc == 0) {
+        // ISO was mounted into HanaFS under the mountpoint; register it with VFS
+        hanacore::fs::vfs_register_mount("hanafs", dst);
+    }
         if (rc == 0) print("Mounted drive to "); else print("Mount failed: ");
         print(dst); print("\n");
         return;
@@ -388,7 +407,7 @@ namespace hanacore {
                     sprintf(fullpath, "/bin/%s", cmd);
                         tty_write("Trying to execute "); tty_write(fullpath); tty_write("\n");
                     size_t fsize = 0;
-                        void* data = hanacore::fs::hanafs_get_file_alloc(fullpath, &fsize);
+                        void* data = hanacore::fs::vfs_get_file_alloc(fullpath, &fsize);
                     if (data) {
                         tty_write("Loaded file from FAT32 (size: ");
                         char numbuf[32]; size_t n=0; size_t tmp=fsize;

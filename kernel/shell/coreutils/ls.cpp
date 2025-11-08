@@ -1,4 +1,4 @@
-#include "../../filesystem/hanafs.hpp"
+#include "../../filesystem/vfs.hpp"
 #include <stddef.h>
 
 extern "C" void print(const char*);
@@ -31,7 +31,7 @@ extern "C" void builtin_ls_cmd(const char* path) {
     print(path);
     print("\n");
 
-    int rc = hanacore::fs::hanafs_list_dir(path, ls_cb);
+    int rc = hanacore::fs::vfs_list_dir(path, ls_cb);
     if (rc != 0) {
         print("ls: failed to list directory (check mount or cluster)\n");
     }

@@ -10,6 +10,8 @@
 #include <stddef.h>
 #include "fdtable.hpp"
 #include "../filesystem/hanafs.hpp"
+#include "../filesystem/vfs.hpp"
+#include "../filesystem/ramfs.hpp"
 #include "../api/hanaapi.h"
 #include "../mem/heap.hpp"
 #include "../tty/tty.hpp"
@@ -67,10 +69,10 @@ extern "C" uint64_t syscall_dispatch(uint64_t num, uint64_t a, uint64_t b, uint6
             if (!path) return (uint64_t)-1;
             // allocate fd in current task
             // simple: read full file into buffer if exists
-            size_t len = 0; void* data = hanacore::fs::hanafs_get_file_alloc(path, &len);
+            size_t len = 0; void* data = hanacore::fs::vfs_get_file_alloc(path, &len);
             // If file does not exist and O_CREAT specified, create empty file
             if (!data && (flags & HANA_O_CREAT)) {
-                hanacore::fs::hanafs_create_file(path);
+                ramfs_create_file(path);
                 // leave data==NULL and len==0 -> empty file
             }
             // find fd using current task

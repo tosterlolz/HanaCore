@@ -25,8 +25,8 @@ file(GLOB_RECURSE KERNEL_ASM_SRCS
 )
 
 set(EXTRA_C_SRCS
-        ${CMAKE_CURRENT_SOURCE_DIR}/../flanterm/src/flanterm.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/../flanterm/src/flanterm_backends/fb.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/flanterm/src/flanterm.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/flanterm/src/flanterm_backends/fb.c
         ${CMAKE_CURRENT_SOURCE_DIR}/boot/limine_entry.c
         ${CMAKE_CURRENT_SOURCE_DIR}/libs/libc.c
         ${CMAKE_CURRENT_SOURCE_DIR}/shell/shell.cpp
@@ -105,3 +105,10 @@ add_custom_command(TARGET kernel POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:kernel> ${CMAKE_BINARY_DIR}/iso_root/boot/kernel
         COMMENT "📦 Copied kernel.elf into iso_root/boot"
 )
+
+# If a musl syscall shim is present, build it so userland build rules can link
+# against libmusl_shim.a. This is optional and won't break the kernel build
+# if the directory is not present.
+if(EXISTS "${CMAKE_SOURCE_DIR}/kernel/userland/musl_shim/CMakeLists.txt")
+        add_subdirectory(${CMAKE_SOURCE_DIR}/kernel/userland/musl_shim)
+endif()

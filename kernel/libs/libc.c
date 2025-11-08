@@ -171,6 +171,52 @@ char *utoa(unsigned int value, char *buf, size_t buflen) {
     return buf;
 }
 
+// Unsigned 64-bit to decimal string
+char *utoa64(unsigned long long value, char *buf, size_t buflen) {
+    if (!buf || buflen == 0) return buf;
+    char tmp[32];
+    int pos = 0;
+    if (value == 0) tmp[pos++] = '0';
+    while (value > 0 && pos < (int)sizeof(tmp)-1) {
+        tmp[pos++] = '0' + (int)(value % 10ULL);
+        value /= 10ULL;
+    }
+    size_t out_len = (size_t)pos;
+    if (out_len + 1 > buflen) {
+        size_t start = out_len - (buflen - 1);
+        size_t j = 0;
+        for (size_t i = out_len; i > start; --i) buf[j++] = tmp[i-1];
+        buf[j] = '\0';
+        return buf;
+    }
+    for (int i = 0; i < pos; ++i) buf[i] = tmp[pos-1-i];
+    buf[pos] = '\0';
+    return buf;
+}
+
+// Unsigned 64-bit to hex string (lowercase)
+char *utoa64_hex(unsigned long long value, char *buf, size_t buflen) {
+    if (!buf || buflen == 0) return buf;
+    const char *hex = "0123456789abcdef";
+    char tmp[32]; int pos = 0;
+    if (value == 0) tmp[pos++] = '0';
+    while (value > 0 && pos < (int)sizeof(tmp)-1) {
+        tmp[pos++] = hex[value & 0xF];
+        value >>= 4;
+    }
+    size_t out_len = (size_t)pos;
+    if (out_len + 1 > buflen) {
+        size_t start = out_len - (buflen - 1);
+        size_t j = 0;
+        for (size_t i = out_len; i > start; --i) buf[j++] = tmp[i-1];
+        buf[j] = '\0';
+        return buf;
+    }
+    for (int i = 0; i < pos; ++i) buf[i] = tmp[pos-1-i];
+    buf[pos] = '\0';
+    return buf;
+}
+
 int vsprintf(char *buf, const char *fmt, va_list args) {
     char *p = buf;
     while (*fmt) {
@@ -179,6 +225,10 @@ int vsprintf(char *buf, const char *fmt, va_list args) {
             continue;
         }
         ++fmt;
+        // support length modifiers 'l' and 'll'
+        int len_mod = 0; // 0=default,1=l,2=ll
+        if (*fmt == 'l') { ++fmt; len_mod = 1; if (*fmt == 'l') { ++fmt; len_mod = 2; } }
+
         switch (*fmt) {
             case 's': {
                 const char *s = va_arg(args, const char*);
@@ -186,37 +236,53 @@ int vsprintf(char *buf, const char *fmt, va_list args) {
                 break;
             }
             case 'd': {
-                int val = va_arg(args, int);
-                char tmp[32];
-                if (val < 0) {
-                    *p++ = '-';
-                    val = -val;
+                if (len_mod == 0) {
+                    int val = va_arg(args, int);
+                    char tmp[32];
+                    if (val < 0) { *p++ = '-'; val = -val; }
+                    utoa((unsigned int)val, tmp, sizeof(tmp));
+                    char *t = tmp; while (*t) *p++ = *t++;
+                } else {
+                    long val = va_arg(args, long);
+                    char tmp[64];
+                    if (val < 0) { *p++ = '-'; val = -val; }
+                    utoa64((unsigned long long)val, tmp, sizeof(tmp));
+                    char *t = tmp; while (*t) *p++ = *t++;
                 }
-                utoa((unsigned int)val, tmp, sizeof(tmp));
-                char *t = tmp;
-                while (*t) *p++ = *t++;
                 break;
             }
             case 'u': {
-                unsigned int val = va_arg(args, unsigned int);
-                char tmp[32];
-                utoa(val, tmp, sizeof(tmp));
-                char *t = tmp;
-                while (*t) *p++ = *t++;
+                if (len_mod == 0) {
+                    unsigned int val = va_arg(args, unsigned int);
+                    char tmp[32]; utoa(val, tmp, sizeof(tmp)); char *t = tmp; while (*t) *p++ = *t++;
+                } else {
+                    unsigned long val = va_arg(args, unsigned long);
+                    char tmp[64]; utoa64((unsigned long long)val, tmp, sizeof(tmp)); char *t = tmp; while (*t) *p++ = *t++;
+                }
                 break;
             }
             case 'x': {
-                unsigned int val = va_arg(args, unsigned int);
-                char tmp[32];
-                char hex[] = "0123456789ABCDEF";
-                int i = 0;
-                if (val == 0) tmp[i++] = '0';
-                while (val > 0 && i < (int)sizeof(tmp)-1) {
-                    tmp[i++] = hex[val & 0xF];
-                    val >>= 4;
+                if (len_mod == 0) {
+                    unsigned int val = va_arg(args, unsigned int);
+                    char tmp[32]; char hex[] = "0123456789ABCDEF"; int i = 0;
+                    if (val == 0) tmp[i++] = '0';
+                    while (val > 0 && i < (int)sizeof(tmp)-1) { tmp[i++] = hex[val & 0xF]; val >>= 4; }
+                    for (int j = i-1; j >= 0; --j) *p++ = tmp[j];
+                } else {
+                    unsigned long long val = (len_mod == 2) ? va_arg(args, unsigned long long) : (unsigned long)va_arg(args, unsigned long);
+                    char tmp[64]; utoa64_hex(val, tmp, sizeof(tmp)); char *t = tmp; while (*t) *p++ = *t++;
                 }
-                // reverse
-                for (int j = i-1; j >= 0; --j) *p++ = tmp[j];
+                break;
+            }
+            case 'p': {
+                void *ptr = va_arg(args, void*);
+                unsigned long long val = (unsigned long long)(uintptr_t)ptr;
+                // print as 0xhhhhhhhhhhhhhhhh (pad to 16 hex digits)
+                *p++ = '0'; *p++ = 'x';
+                char tmp[32]; utoa64_hex(val, tmp, sizeof(tmp));
+                int len = (int)strlen(tmp);
+                for (int i = 0; i < 16 - len; ++i) *p++ = '0';
+                char *t = tmp; while (*t) *p++ = *t++;
                 break;
             }
             case 'c': {

@@ -6,6 +6,7 @@
 #include "../utils/logger.hpp"
 #include "../libs/libc.h"
 #include "../mem/heap.hpp"
+#include "vfs.hpp"
 
 // Include IDE driver header so filesystem code can call ata_write_sector and
 // ata_get_sector_count when formatting or probing devices.
@@ -15,7 +16,7 @@
 // directly from memory instead of relying on ATA devices (which aren't
 // necessarily present when running from an ISO). Include the Limine header
 // and declare the request objects.
-#include "../../limine/limine.h"
+#include "../../third_party/limine/limine.h"
 
 extern volatile struct limine_hhdm_request limine_hhdm_request;
 extern volatile struct limine_module_request module_request;
@@ -691,6 +692,7 @@ int fat32_init_from_memory(const void* data, size_t size) {
     mounted_drive = 1;
     // default name when caller doesn't supply a path
     snprintf(mounted_module_name, sizeof(mounted_module_name), "<memory>");
+
     return 0;
 }
 
@@ -1291,7 +1293,32 @@ int fat32_mount_ata_master(int drive_number) {
     snprintf(msg, sizeof(msg), "[FAT32] Mounting ATA master as %d:", drive_number);
     hanacore::utils::log_ok_cpp(msg);
     (void)drive_number; // currently unused beyond logging
-    return hanacore::fs::fat32_init_from_ata();
+    // Try ATA first
+    if (hanacore::fs::fat32_init_from_ata() == 0) return 0;
+    // Fallback: try to initialize from any Limine module that looks like a disk image
+    if (module_request.response) {
+        volatile struct limine_module_response* resp = module_request.response;
+        for (uint64_t i = 0; i < resp->module_count; ++i) {
+            volatile struct limine_file* mod = resp->modules[i];
+            const void* mod_addr = (const void*)(uintptr_t)mod->address;
+            size_t mod_size = (size_t)mod->size;
+            if (limine_hhdm_request.response) {
+                uint64_t off = limine_hhdm_request.response->offset;
+                if ((uintptr_t)mod_addr < off) mod_addr = (const void*)(off + (uintptr_t)mod->address);
+            }
+            // Heuristic: prefer modules with names containing "rootfs" or ".img" or ".iso"
+            const char* path = (const char*)(uintptr_t)mod->path;
+            if (path) {
+                if (strstr(path, "rootfs") || strstr(path, ".img") || strstr(path, ".iso")) {
+                    if (hanacore::fs::fat32_init_from_memory(mod_addr, mod_size) == 0) return 0;
+                }
+            } else {
+                // If unnamed, still try as last resort
+                if (hanacore::fs::fat32_init_from_memory(mod_addr, mod_size) == 0) return 0;
+            }
+        }
+    }
+    return -1;
 }
 
 int fat32_mount_ata_slave(int drive_number) {

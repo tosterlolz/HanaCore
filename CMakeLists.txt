@@ -47,4 +47,22 @@ foreach(_f IN LISTS LIMINE_FILES)
   )
 endforeach()
 
+# Optionally build a FAT32 rootfs image (rootfs.img) from `rootfs_src/` and
+# include it as a Limine module in the ISO. This recreates the previous
+# behaviour where the ISO bundled a rootfs image that the kernel can mount.
+if(BUILD_USERLAND)
+  # Run the mkrootfs helper script located in tools/ to produce ${CMAKE_BINARY_DIR}/rootfs.img
+  add_custom_command(TARGET install_iso POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E echo "Generating rootfs.img from ${CMAKE_SOURCE_DIR}/rootfs_src"
+    COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_SOURCE_DIR}/tools ${CMAKE_SOURCE_DIR}/tools/mkrootfs.sh ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${ISO_ROOT_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/rootfs.img ${ISO_ROOT_DIR}/rootfs.img
+    COMMENT "Create rootfs.img and copy into ISO root"
+  )
+  # Informational note at configure time
+  message(STATUS "BUILD_USERLAND=ON: rootfs.img will be created from rootfs_src/ and included in the ISO")
+else()
+  message(STATUS "BUILD_USERLAND=OFF: skipping rootfs.img creation")
+endif()
+
 message(STATUS "Configured HanaCore with CMake. Build directory: ${CMAKE_BINARY_DIR}")

@@ -1,5 +1,57 @@
 #pragma once
 
+#include <stddef.h>
+#include <stdint.h>
+#include "../api/hanaapi.h"
+
+#ifdef __cplusplus
+namespace hanacore { namespace fs {
+    // Minimal compatibility layer declarations for the legacy HanaFS API.
+    // Implemented as a tiny in-memory filesystem so other subsystems can
+    // compile and run while the full VFS migration continues.
+    int hanafs_init(void);
+    int hanafs_write_file(const char* path, const void* buf, size_t len);
+    void* hanafs_get_file_alloc(const char* path, size_t* out_len);
+    int hanafs_list_dir(const char* path, void (*cb)(const char* name));
+    int hanafs_create_file(const char* path);
+    int hanafs_unlink(const char* path);
+    int hanafs_make_dir(const char* path);
+    int hanafs_remove_dir(const char* path);
+    int hanafs_persist_to_ata(void);
+    int hanafs_load_from_ata(void);
+    int hanafs_format_ata_master(int drive_number);
+    void hanafs_set_persist_enabled(int enabled);
+    int hanafs_mount_iso_drive(int drive, const char* mount_point);
+    int hanafs_stat(const char* path, struct hana_stat* st);
+    hana_dir_t* hanafs_opendir(const char* path);
+    hana_dirent* hanafs_readdir(hana_dir_t* dir);
+    int hanafs_closedir(hana_dir_t* dir);
+    int hanafs_list_mounts(void (*cb)(const char* line));
+} }
+#endif
+
+extern "C" {
+    int hanafs_init(void);
+    int hanafs_write_file(const char* path, const void* buf, size_t len);
+    void* hanafs_get_file_alloc(const char* path, size_t* out_len);
+    int hanafs_list_dir(const char* path, void (*cb)(const char* name));
+    int hanafs_create_file(const char* path);
+    int hanafs_unlink(const char* path);
+    int hanafs_make_dir(const char* path);
+    int hanafs_remove_dir(const char* path);
+    int hanafs_persist_to_ata(void);
+    int hanafs_load_from_ata(void);
+    int hanafs_format_ata_master(int drive_number);
+    void hanafs_set_persist_enabled(int enabled);
+    int hanafs_mount_iso_drive(int drive, const char* mount_point);
+    int hanafs_stat(const char* path, struct hana_stat* st);
+    hana_dir_t* hanafs_opendir(const char* path);
+    hana_dirent* hanafs_readdir(hana_dir_t* dir);
+    int hanafs_closedir(hana_dir_t* dir);
+    int hanafs_list_mounts(void (*cb)(const char* line));
+}
+#pragma once
+
 #include <stdint.h>
 #include <stddef.h>
 

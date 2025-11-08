@@ -1,4 +1,4 @@
-#include "../../filesystem/hanafs.hpp"
+#include "../../filesystem/vfs.hpp"
 
 extern "C" void print(const char*);
 
@@ -8,7 +8,7 @@ extern "C" void builtin_rmdir_cmd(const char* arg) {
         return;
     }
 
-    int rc = hanacore::fs::hanafs_remove_dir(arg);
+    int rc = hanacore::fs::vfs_remove_dir(arg);
     if (rc == 0) {
         print("rmdir: ok\n");
     } else {
