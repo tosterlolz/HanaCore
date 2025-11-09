@@ -15,7 +15,7 @@ int main(int argc, char** argv) {
     printf("Starting filesystem UBSAN test harness\n");
 
     // Initialize VFS and HanaFS
-    hanacore::fs::vfs_init();
+    hanacore::fs::init();
     if (hanacore::fs::hanafs_init() != 0) {
         printf("hanafs_init failed\n");
         return 1;
@@ -32,7 +32,7 @@ int main(int argc, char** argv) {
     }
 
     size_t out_len = 0;
-    void* data = hanacore::fs::vfs_get_file_alloc(path, &out_len);
+    void* data = hanacore::fs::get_file_alloc(path, &out_len);
     if (!data) {
         printf("vfs_get_file_alloc returned NULL\n");
     } else {
@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
     }
 
     // List mounts
-    hanacore::fs::vfs_list_mounts([](const char* line){ printf("%s\n", line); });
+    hanacore::fs::list_mounts([](const char* line){ printf("%s\n", line); });
 
     printf("filesystem UBSAN test harness completed\n");
     return 0;

@@ -30,6 +30,7 @@ void* vfs_get_file_alloc(const char* path, size_t* out_len);
 #ifdef __cplusplus
 namespace hanacore {
 namespace fs {
+inline void init() { ::vfs_init(); }
 
 inline int list_dir(const char* path, void (*cb)(const char* name)) {
     return ::vfs_list_dir(path, cb);

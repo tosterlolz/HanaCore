@@ -1,16 +1,11 @@
-# -------- Ensure shell is present --------
-if [ ! -x "$SRC_DIR/rootfs_src/bin/hcsh" ]; then
-    echo "[WARNING] rootfs_src/bin/hcsh is missing or not executable! Shell will not boot automatically."
-else
-    echo "[INFO] Found shell: rootfs_src/bin/hcsh"
-fi
+
 #!/usr/bin/env bash
 set -euo pipefail
 
 BUILD_DIR="./build"
 SRC_DIR="./rootfs_src"
 IMG="$BUILD_DIR/rootfs.img"
-SIZE_MB=4
+SIZE_MB=8
 TMPDIR="$(mktemp -d)"
 
 cleanup() {
@@ -23,92 +18,101 @@ cleanup() {
 trap cleanup EXIT
 
 echo "mkrootfs: build dir=${BUILD_DIR}, src=${SRC_DIR}, img=${IMG}"
-
 mkdir -p "$BUILD_DIR"
 
 # -------- Allocate blank image --------
 if command -v fallocate >/dev/null 2>&1; then
     echo "mkrootfs: allocating ${SIZE_MB}MiB image with fallocate"
     fallocate -l "${SIZE_MB}M" "$IMG"
+    sync
 else
     echo "mkrootfs: fallocate not found, using dd"
     dd if=/dev/zero of="$IMG" bs=1M count=${SIZE_MB} status=none
 fi
 
-# -------- Format as FAT32 --------
-if command -v mkfs.vfat >/dev/null 2>&1; then
-    echo "mkrootfs: formatting image as FAT32 (mkfs.vfat)"
-    mkfs.vfat -F 32 "$IMG" >/dev/null
-elif command -v mkdosfs >/dev/null 2>&1; then
-    echo "mkrootfs: formatting image as FAT32 (mkdosfs)"
-    mkdosfs -F 32 "$IMG" >/dev/null
+# -------- Format as FAT32 only --------
+if command -v mkfs.fat >/dev/null 2>&1; then
+    echo "mkrootfs: formatting image as FAT32 (mkfs.fat)"
+    mkfs.fat -F 32 -n ROOTFS "$IMG" >/dev/null
+    sync
+    # Ensure image file exists and is accessible before mtools
+    if [ ! -f "$IMG" ]; then
+        echo "mkrootfs: ERROR: image file $IMG does not exist after formatting"
+        exit 1
+    fi
 else
-    echo "mkrootfs: mkfs.vfat/mkdosfs not found — please install dosfstools"
+    echo "mkrootfs: mkfs.fat not found — please install dosfstools"
     exit 1
 fi
 
-# -------- Copy files into image --------
-USE_MTOOLS_FALLBACK=0
-if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-    echo "mkrootfs: using sudo loop-mount to populate image (non-interactive)"
+# -------- Copy files into FAT32 image --------
+if command -v mcopy >/dev/null 2>&1 && command -v mmd >/dev/null 2>&1; then
+    echo "mkrootfs: using mtools (mcopy/mmd)"
+    export MTOOLS_SKIP_CHECK=1
+    export MTOOLS_NO_VFAT=1
+    echo "mkrootfs: copying files from ${SRC_DIR}/ recursively"
+    if ! mcopy -i "$IMG" -s "$SRC_DIR/*" ::/; then
+        echo "mkrootfs: mtools failed, falling back to sudo loop-mount for FAT32 image"
+        MNT="${TMPDIR}/mnt"
+        mkdir -p "$MNT"
+        if sudo mount -o loop "$IMG" "$MNT" 2>/dev/null; then
+            echo "mkrootfs: mounted image at $MNT"
+            sudo mkdir -p "$MNT"
+            echo "mkrootfs: copying files from ${SRC_DIR}/"
+            if ! sudo cp -a "$SRC_DIR/." "$MNT/" 2>/dev/null; then
+                echo "mkrootfs: cp -a failed (owner preserve) — retrying without ownership preservation"
+                sudo cp -a -r --no-preserve=ownership "$SRC_DIR/." "$MNT/" || true
+            fi
+                echo "mkrootfs: contents of $MNT after copy:"
+                sudo ls -lR "$MNT"
+                sync
+                sudo umount "$MNT"
+                sync
+        else
+            echo "mkrootfs: failed to mount FAT32 image"
+            exit 1
+        fi
+    fi
+else
+    echo "mkrootfs: mtools not available; falling back to sudo loop-mount for FAT32 image"
     MNT="${TMPDIR}/mnt"
     mkdir -p "$MNT"
     if sudo mount -o loop "$IMG" "$MNT" 2>/dev/null; then
         echo "mkrootfs: mounted image at $MNT"
         sudo mkdir -p "$MNT"
-        if [ -d "$SRC_DIR/bin" ]; then
-            echo "mkrootfs: copying files from ${SRC_DIR}/"
-            # Try to copy preserving attributes; if preserving ownership fails
-            # (non-root filesystem), fall back to copying without preserving owner.
-            if ! sudo cp -a "$SRC_DIR/." "$MNT/" 2>/dev/null; then
-                echo "mkrootfs: cp -a failed (owner preserve) — retrying without ownership preservation"
-                sudo cp -a --no-preserve=ownership "$SRC_DIR/." "$MNT/" || true
-            fi
-        else
-            echo "mkrootfs: no bin/ found in rootfs_src; creating README"
-            echo "HanaCore rootfs image" | sudo tee "$MNT/README.txt" >/dev/null
+        echo "mkrootfs: copying files from ${SRC_DIR}/"
+        if ! sudo cp -a "$SRC_DIR/." "$MNT/" 2>/dev/null; then
+            ls $MNT
+            ls $MNT/bin
+            echo "mkrootfs: cp -a failed (owner preserve) — retrying without ownership preservation"
+            sudo cp -a -r --no-preserve=ownership "$SRC_DIR/." "$MNT/" || true
         fi
-        sync
-        sudo umount "$MNT"
+            echo "mkrootfs: contents of $MNT after copy:"
+            sudo ls -lR "$MNT"
+            sync
+            sudo umount "$MNT"
     else
-        echo "mkrootfs: failed to mount with sudo; switching to mtools fallback"
-        USE_MTOOLS_FALLBACK=1
-    fi
-else
-    echo "mkrootfs: no sudo access, using mtools fallback"
-    USE_MTOOLS_FALLBACK=1
-fi
-
-# -------- MTOOLS fallback (no root needed) --------
-if [ "$USE_MTOOLS_FALLBACK" -eq 1 ]; then
-    if command -v mcopy >/dev/null 2>&1 && command -v mmd >/dev/null 2>&1; then
-        echo "mkrootfs: using mtools (mcopy/mmd)"
-        export MTOOLS_SKIP_CHECK=1
-        mmd -i "$IMG" ::/ || true
-        if [ -d "$SRC_DIR/bin" ]; then
-            echo "mkrootfs: copying files from ${SRC_DIR}/"
-            (cd "$SRC_DIR" && \
-                find . -type d -print0 | while IFS= read -r -d '' d; do
-                    [[ "$d" == "." ]] && continue
-                    mmd -i "$IMG" ::"/$d" || true
-                done)
-            (cd "$SRC_DIR" && \
-                find . -type f -print0 | while IFS= read -r -d '' f; do
-                    parentdir=$(dirname "$f")
-                    if [ "$parentdir" != "." ]; then
-                        mmd -i "$IMG" ::"/$parentdir" || true
-                    fi
-                    mcopy -n -D A -i "$IMG" "$f" ::"/$f" || true
-                done)
-        else
-            echo "mkrootfs: no bin/ found in rootfs_src; creating README"
-            echo "HanaCore rootfs image" > "$TMPDIR/README.txt"
-            mcopy -i "$IMG" "$TMPDIR/README.txt" ::/README.txt
-        fi
-    else
-        echo "mkrootfs: mtools not available; cannot populate image"
+        echo "mkrootfs: failed to mount FAT32 image"
         exit 1
     fi
 fi
 
 echo "mkrootfs: created ${IMG} successfully (${SIZE_MB}MiB FAT32)"
+
+# Copy rootfs.img into ISO directory for Limine
+iso_root="./build/cmake/iso_root/"
+mkdir -p "$iso_root"
+cp "$IMG" "$iso_root/rootfs.img"
+echo "mkrootfs: copied rootfs.img to $iso_root/rootfs.img for ISO inclusion"
+
+# Verify that /bin/hcsh exists in the image using mdir
+if command -v mdir >/dev/null 2>&1; then
+    if mdir -i "$IMG" ::/bin | grep -q hcsh; then
+        echo "mkrootfs: verified /bin/hcsh exists in rootfs.img"
+    else
+        echo "mkrootfs: WARNING: /bin/hcsh NOT found in rootfs.img!"
+    fi
+else
+    echo "mkrootfs: mdir not available, cannot verify /bin/hcsh in image"
+fi
+echo "mkrootfs: copied rootfs.img to $iso_root/rootfs.img for ISO inclusion"

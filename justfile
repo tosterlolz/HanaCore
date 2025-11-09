@@ -16,7 +16,7 @@ build-kernel:
 	cmake --build build/cmake --target kernel -- -j$(nproc)
 
 # Build optional userland and install files and produce an ISO
-build: clean build-kernel
+build: build-kernel
 	if [ -z "$$CROSS_COMPILE" ]; then export CROSS_COMPILE=; fi; \
 	cmake -S . -B build/cmake || true; \
 	# Build kernel already done by dependency; optionally build userland modules

@@ -7,6 +7,7 @@
 #include "arch/pit.hpp"
 #include "utils/logger.hpp"
 #include "filesystem/fat32.hpp"
+#include "filesystem/ext3.hpp"
 #include "filesystem/hanafs.hpp"
 #include "filesystem/vfs.hpp"
 #include "filesystem/procfs.hpp"
@@ -114,13 +115,22 @@ extern "C" void kernel_main() {
                     rootfs_mounted = true;
                 } else {
                     log_fail("FAT32 mount failed for rootfs.img (%s)", path);
-                    log_info("Attempting floppy mount for rootfs.img: %s", path);
-                    if (hanacore::fs::floppy_init_from_memory(addr, mod->size) == 0) {
-                        hanacore::fs::register_mount("floppy", "/");
-                        log_ok("Mounted floppy rootfs.img at / (%s)", path);
+                    log_info("Attempting EXT3 mount for rootfs.img: %s", path);
+                    ext3::set_image(addr, mod->size);
+                    if (ext3::init() == 0 && ext3::mount(0, "/") == 0) {
+                        hanacore::fs::register_mount("ext3", "/");
+                        log_ok("Mounted EXT3 rootfs.img at / (%s)", path);
                         rootfs_mounted = true;
                     } else {
-                        log_fail("Floppy mount failed for rootfs.img (%s)", path);
+                        log_fail("EXT3 mount failed for rootfs.img (%s)", path);
+                        log_info("Attempting floppy mount for rootfs.img: %s", path);
+                        if (hanacore::fs::floppy_init_from_memory(addr, mod->size) == 0) {
+                            hanacore::fs::register_mount("floppy", "/");
+                            log_ok("Mounted floppy rootfs.img at / (%s)", path);
+                            rootfs_mounted = true;
+                        } else {
+                            log_fail("Floppy mount failed for rootfs.img (%s)", path);
+                        }
                     }
                 }
             }
@@ -175,21 +185,28 @@ extern "C" void kernel_main() {
         fat32_mount_all_letter_modules();
     }
 
-    // Try to find and execute /bin/hcsh from the mounted rootfs.img
+    // Try to find and execute /bin/hcsh or /bin/HCSH from the mounted rootfs.img
     size_t hcsh_size = 0;
     void* hcsh_data = ::vfs_get_file_alloc("/bin/hcsh", &hcsh_size);
-    if (hcsh_data && hcsh_size > 0) {
+    if (!(hcsh_data && hcsh_size > 0)) {
+        hcsh_data = ::vfs_get_file_alloc("/bin/HCSH", &hcsh_size);
+        if (hcsh_data && hcsh_size > 0) {
+            log_info("Found shell at /bin/HCSH in rootfs.img (size=%u bytes)", (unsigned)hcsh_size);
+        }
+    } else {
         log_info("Found shell at /bin/hcsh in rootfs.img (size=%u bytes)", (unsigned)hcsh_size);
+    }
+    if (hcsh_data && hcsh_size > 0) {
         void* entry = elf64_load_from_memory(hcsh_data, hcsh_size);
         if (entry) {
-            log_ok("Launching shell from /bin/hcsh");
+            log_ok("Launching shell from rootfs.img");
             void (*shell_entry)(void) = (void(*)(void))entry;
             shell_entry();
         } else {
-            log_fail("Failed to load ELF from /bin/hcsh");
+            log_fail("Failed to load ELF from shell binary");
         }
     } else {
-        log_fail("No shell found at /bin/hcsh in rootfs.img");
+        log_fail("No shell found at /bin/hcsh or /bin/HCSH in rootfs.img");
     }
 
     hanacore::scheduler::init_scheduler();
