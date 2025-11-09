@@ -20,6 +20,7 @@
 #include "utils/utils.hpp"
 #include  "libs/libc.h"
 #include <stdint.h>
+#include <stddef.h>
 
 extern "C" void fat32_mount_all_letter_modules();
 extern volatile struct limine_hhdm_request limine_hhdm_request;
@@ -39,8 +40,6 @@ volatile struct limine_module_request module_request = {
     .response = nullptr
 };
 
-#include <stdint.h>
-#include <stddef.h>
 
 static bool ends_with(const char* s, const char* suffix) {
     if (!s || !suffix) return false;
@@ -90,9 +89,17 @@ extern "C" void kernel_main() {
     // Try FAT32 module/image (rootfs.img) first, then fall back to ISO root.
     log_info("Attempting to mount rootfs.img (FAT32) from Limine modules or ATA");
     fat32_mount_all_letter_modules();
-    extern bool fat32_ready;
-    hanacore::fs::register_mount("fat32", "/");
-    log_ok("Mounted FAT32 rootfs (rootfs.img)");
+    if (hanacore::fs::fat32_ready) {
+        log_ok("Mounted FAT32 rootfs (rootfs.img)");
+    } else {
+        log_info("FAT32 did not mount rootfs.img; falling back to VFS defaults");
+    }
+    hanacore::fs::list_mounts([](const char* line) { log_info("%s", line); });
+    hanacore::fs::list_dir("/",
+        [](const char* name) {
+            log_info(" rootfs entry: %s", name);
+        }
+    );
 
     // Try to find and execute /bin/hcsh or /bin/HCSH from the mounted rootfs
     size_t hcsh_size = 0;

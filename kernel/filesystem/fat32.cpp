@@ -112,6 +112,24 @@ static int mounted_drive = -1;
 // If a module backed filesystem was mounted, record the module path (if known)
 static char mounted_module_name[160] = "";
 
+// If a Limine module image was used to mount FAT32, keep a pointer to its
+// in-memory data so sector reads can read directly from the module buffer.
+static const uint8_t* module_image = nullptr;
+static size_t module_image_size = 0;
+
+static int fat32_read_sector(uint32_t lba, void* buf) {
+    if (mounted_drive == 1 && module_image && module_image_size > 0 && bytes_per_sector > 0) {
+        uint64_t off = (uint64_t)lba * (uint64_t)bytes_per_sector;
+        if (off + bytes_per_sector <= module_image_size) {
+            memcpy(buf, module_image + off, bytes_per_sector);
+            return 0;
+        }
+        return -1;
+    }
+    // Fallback to ATA device read
+    return ata_read_sector(lba, buf);
+}
+
 // =================== Helpers ===================
 
 // Simple helper: check whether `s` ends with `suffix` (NUL-terminated strings)
@@ -651,6 +669,10 @@ int fat32_init_from_ata() {
     cluster_begin_lba    = bpb.RsvdSecCnt + bpb.NumFATs * bpb.FATSz32;
     root_dir_cluster     = bpb.RootClus;
 
+    // remember module-backed image for direct reads
+    module_image = d;
+    module_image_size = size;
+
     // Basic validation of BPB values (mirror checks from init_from_memory)
     if (bytes_per_sector == 0 || bytes_per_sector > 4096) {
         char tmp[160];
@@ -683,8 +705,6 @@ int fat32_init_from_ata() {
                      bytes_per_sector, sectors_per_cluster, root_dir_cluster);
         hanacore::utils::log_ok_cpp(tmp);
     }
-    // Register FAT32 as root mount so / paths resolve into the mounted device
-    vfs_register_mount("fat32", "/");
     return 0;
 }
 
@@ -1032,6 +1052,13 @@ int64_t fat32_read_file(const char* path, void* buf, size_t len) {
 void* fat32_get_file_alloc(const char* path, size_t* out_len) {
     if (!fat32_ready || !path || !out_len) return nullptr;
 
+    // Diagnostic logging to help debug missing files (e.g. /bin/hcsh)
+    {
+        char tmp[192];
+        snprintf(tmp, sizeof(tmp), "[FAT32] get_file_alloc: path=%s mounted_drive=%d root_cluster=%u", path, mounted_drive, root_dir_cluster);
+        hanacore::utils::log_info_cpp(tmp);
+    }
+
     // Expect absolute path like "/bin/foo" (no drive letter)
     const char* p = path;
     if (*p == '/') ++p; // skip leading slash
@@ -1052,6 +1079,11 @@ void* fat32_get_file_alloc(const char* path, size_t* out_len) {
         if (*p == '/') ++p; // skip separator
 
         // uppercase component for comparison (FAT short names are uppercase)
+        {
+            char tmp[128];
+            snprintf(tmp, sizeof(tmp), "[FAT32] resolving component: %s", comp);
+            hanacore::utils::log_info_cpp(tmp);
+        }
         for (size_t i = 0; i < ci; ++i) {
             char c = comp[i];
             if (c >= 'a' && c <= 'z') comp[i] = c - 'a' + 'A';
@@ -1067,7 +1099,15 @@ void* fat32_get_file_alloc(const char* path, size_t* out_len) {
         while (cluster != 0 && cluster != 0x0FFFFFF7 && cluster < 0x0FFFFFF8) {
             for (uint32_t s = 0; s < sectors_per_cluster; ++s) {
                 uint32_t lba = cluster_to_lba(cluster) + s;
-                if (ata_read_sector(lba, sector) != 0) return nullptr;
+                {
+                    char dbg[128];
+                    snprintf(dbg, sizeof(dbg), "[FAT32] get_file_alloc: reading lba=%u (cluster=%u sec=%u)", lba, cluster, s);
+                    hanacore::utils::log_info_cpp(dbg);
+                }
+                if (fat32_read_sector(lba, sector) != 0) {
+                    hanacore::utils::log_info_cpp("[FAT32] get_file_alloc: fat32_read_sector failed");
+                    return nullptr;
+                }
 
                 for (int off = 0; off < (int)bytes_per_sector; off += 32) {
                     uint8_t first = sector[off];
@@ -1122,6 +1162,11 @@ void* fat32_get_file_alloc(const char* path, size_t* out_len) {
                     uint32_t low = (uint32_t)sector[off + 26] | ((uint32_t)sector[off + 27] << 8);
                     found_cluster = (high << 16) | low;
                     found_size = (uint32_t)sector[off + 28] | ((uint32_t)sector[off + 29] << 8) | ((uint32_t)sector[off + 30] << 16) | ((uint32_t)sector[off + 31] << 24);
+                    {
+                        char df[160];
+                        snprintf(df, sizeof(df), "[FAT32] matched entry name=%s is_dir=%d cluster=%u size=%u", name, (int)is_dir, found_cluster, found_size);
+                        hanacore::utils::log_info_cpp(df);
+                    }
                     break;
                 }
                 if (found || cluster == 0) break;
