@@ -12,7 +12,6 @@
 #include "filesystem/vfs.hpp"
 #include "filesystem/procfs.hpp"
 #include "filesystem/devfs.hpp"
-#include "filesystem/isofs.hpp"
 #include "filesystem/floppy.hpp"
 #include "scheduler/scheduler.hpp"
 #include "userland/users.hpp"
@@ -39,6 +38,9 @@ volatile struct limine_module_request module_request = {
     .revision = 0,
     .response = nullptr
 };
+
+#include <stdint.h>
+#include <stddef.h>
 
 static bool ends_with(const char* s, const char* suffix) {
     if (!s || !suffix) return false;
@@ -82,131 +84,38 @@ extern "C" void kernel_main() {
 
     // Initialize all filesystems
     ::vfs_init();
-    hanacore::fs::hanafs_init();
     hanacore::fs::procfs_init();
     hanacore::fs::devfs_init();
-    hanacore::fs::isofs_init();
     
-    // Try to mount rootfs from modules (FAT32 preferred, fallback to floppy)
-    bool rootfs_mounted = false;
-    if (module_request.response) {
-        auto resp = module_request.response;
-        log_info("Limine modules detected: %u", (unsigned)resp->module_count);
-        for (uint64_t i = 0; i < resp->module_count; ++i) {
-            auto mod = resp->modules[i];
-            const char* path = (const char*)(uintptr_t)mod->path;
-            if (path && limine_hhdm_request.response) {
-                uint64_t off = limine_hhdm_request.response->offset;
-                if ((uint64_t)path < off) path = (const char*)((uintptr_t)path + off);
-            }
-            log_info("Module %u: %s (size=%u bytes)", (unsigned)i, path ? path : "(null)", (unsigned)mod->size);
+    // Try FAT32 module/image (rootfs.img) first, then fall back to ISO root.
+    log_info("Attempting to mount rootfs.img (FAT32) from Limine modules or ATA");
+    fat32_mount_all_letter_modules();
+    extern bool fat32_ready;
+    hanacore::fs::register_mount("fat32", "/");
+    log_ok("Mounted FAT32 rootfs (rootfs.img)");
 
-            // Try to mount rootfs.img or rootfs
-            if (!rootfs_mounted && path && (ends_with(path, ".img") || ends_with(path, "rootfs"))) {
-                void* addr = mod->address;
-                if (limine_hhdm_request.response) {
-                    uint64_t off = limine_hhdm_request.response->offset;
-                    if ((uintptr_t)addr < off) addr = (void*)((uintptr_t)addr + off);
-                }
-                log_info("Attempting FAT32 mount for rootfs.img: %s", path);
-                if (hanacore::fs::fat32_init_from_memory(addr, mod->size) == 0) {
-                    hanacore::fs::register_mount("fat32", "/");
-                    log_ok("Mounted FAT32 rootfs.img at / (%s)", path);
-                    rootfs_mounted = true;
-                } else {
-                    log_fail("FAT32 mount failed for rootfs.img (%s)", path);
-                    log_info("Attempting EXT3 mount for rootfs.img: %s", path);
-                    ext3::set_image(addr, mod->size);
-                    if (ext3::init() == 0 && ext3::mount(0, "/") == 0) {
-                        hanacore::fs::register_mount("ext3", "/");
-                        log_ok("Mounted EXT3 rootfs.img at / (%s)", path);
-                        rootfs_mounted = true;
-                    } else {
-                        log_fail("EXT3 mount failed for rootfs.img (%s)", path);
-                        log_info("Attempting floppy mount for rootfs.img: %s", path);
-                        if (hanacore::fs::floppy_init_from_memory(addr, mod->size) == 0) {
-                            hanacore::fs::register_mount("floppy", "/");
-                            log_ok("Mounted floppy rootfs.img at / (%s)", path);
-                            rootfs_mounted = true;
-                        } else {
-                            log_fail("Floppy mount failed for rootfs.img (%s)", path);
-                        }
-                    }
-                }
-            }
-
-            // Check for ISO images
-            if (path && (ends_with(path, ".iso") || ends_with(path, "HanaCore.iso"))) {
-                void* addr = mod->address;
-                if (limine_hhdm_request.response) {
-                    uint64_t off = limine_hhdm_request.response->offset;
-                    if ((uintptr_t)addr < off) addr = (void*)((uintptr_t)addr + off);
-                }
-                log_info("Attempting ISO mount: %s", path);
-                if (hanacore::fs::isofs_init_from_memory(addr, mod->size) == 0) {
-                    hanacore::fs::register_mount("isofs", "/iso");
-                    log_ok("Mounted ISO image at /iso");
-                } else {
-                    log_fail("ISO mount failed for (%s)", path);
-                }
-            }
-        }
-        // If no rootfs.img was found, try to mount any FAT32 image as root
-        if (!rootfs_mounted) {
-            for (uint64_t i = 0; i < resp->module_count; ++i) {
-                auto mod = resp->modules[i];
-                const char* path = (const char*)(uintptr_t)mod->path;
-                if (path && limine_hhdm_request.response) {
-                    uint64_t off = limine_hhdm_request.response->offset;
-                    if ((uint64_t)path < off) path = (const char*)((uintptr_t)path + off);
-                }
-                void* addr = mod->address;
-                if (limine_hhdm_request.response) {
-                    uint64_t off = limine_hhdm_request.response->offset;
-                    if ((uintptr_t)addr < off) addr = (void*)((uintptr_t)addr + off);
-                }
-                log_info("Fallback: Attempting FAT32 mount for any module: %s", path);
-                if (hanacore::fs::fat32_init_from_memory(addr, mod->size) == 0) {
-                    hanacore::fs::register_mount("fat32", "/");
-                    log_ok("Mounted fallback FAT32 image at / (%s)", path);
-                    rootfs_mounted = true;
-                    break;
-                }
-            }
-        }
-        if (!rootfs_mounted) {
-            log_fail("No rootfs.img or FAT32 image could be mounted as root. Check Limine config and image format.");
-        }
-    }
-    
-    // Fallback to ATA only if no rootfs.img was mounted
-    if (!rootfs_mounted) {
-        log_info("No rootfs.img found, attempting FAT32 from ATA");
-        fat32_mount_all_letter_modules();
-    }
-
-    // Try to find and execute /bin/hcsh or /bin/HCSH from the mounted rootfs.img
+    // Try to find and execute /bin/hcsh or /bin/HCSH from the mounted rootfs
     size_t hcsh_size = 0;
     void* hcsh_data = ::vfs_get_file_alloc("/bin/hcsh", &hcsh_size);
     if (!(hcsh_data && hcsh_size > 0)) {
         hcsh_data = ::vfs_get_file_alloc("/bin/HCSH", &hcsh_size);
         if (hcsh_data && hcsh_size > 0) {
-            log_info("Found shell at /bin/HCSH in rootfs.img (size=%u bytes)", (unsigned)hcsh_size);
+            log_info("Found shell at /bin/HCSH in rootfs (size=%u bytes)", (unsigned)hcsh_size);
         }
     } else {
-        log_info("Found shell at /bin/hcsh in rootfs.img (size=%u bytes)", (unsigned)hcsh_size);
+        log_info("Found shell at /bin/hcsh in rootfs (size=%u bytes)", (unsigned)hcsh_size);
     }
     if (hcsh_data && hcsh_size > 0) {
         void* entry = elf64_load_from_memory(hcsh_data, hcsh_size);
         if (entry) {
-            log_ok("Launching shell from rootfs.img");
+            log_ok("Launching shell from rootfs");
             void (*shell_entry)(void) = (void(*)(void))entry;
             shell_entry();
         } else {
             log_fail("Failed to load ELF from shell binary");
         }
     } else {
-        log_fail("No shell found at /bin/hcsh or /bin/HCSH in rootfs.img");
+        log_fail("No shell found at /bin/hcsh or /bin/HCSH in rootfs");
     }
 
     hanacore::scheduler::init_scheduler();

@@ -4,6 +4,17 @@
 #include <stddef.h>
 
 namespace hanacore {
+namespace fs {
+    extern bool fat32_ready;
+    int fat32_init_from_iso_root();
+} // namespace fs
+} // namespace hanacore
+#pragma once
+
+#include <stdint.h>
+#include <stddef.h>
+
+namespace hanacore {
     namespace fs {
         // Minimal C++-callable interface that mirrors the C wrappers implemented in
         // `fat32.cpp`. Functions operate on C strings and callbacks to keep the API

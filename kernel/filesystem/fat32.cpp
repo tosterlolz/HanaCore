@@ -3,6 +3,22 @@
 #include <cstdint>
 #include <cstdio>
 
+namespace hanacore {
+namespace fs {
+bool fat32_ready = false;
+// Stub: Mount FAT32 from ISO root directory
+int fat32_init_from_iso_root() {
+    // TODO: Implement actual ISO root mounting logic
+    // For now, just return 0 (success) and set fat32_ready = true
+    fat32_ready = true;
+    return 0;
+}
+} // namespace fs
+} // namespace hanacore
+#include <cstdlib>
+#include <cstdint>
+#include <cstdio>
+
 #include "../utils/logger.hpp"
 #include "../libs/libc.h"
 #include "../mem/heap.hpp"
@@ -85,7 +101,6 @@ struct BPB_FAT32 {
 // =================== State ===================
 
 static BPB_FAT32 bpb;
-static bool fat32_ready = false;
 static uint32_t fat_begin_lba;
 static uint32_t cluster_begin_lba;
 static uint32_t sectors_per_cluster;
