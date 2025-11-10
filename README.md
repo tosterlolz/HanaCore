@@ -2,7 +2,7 @@
 ## a simple ToyOS in C++ i guess
 
 ## Dependencies:
-* gcc, binutils
+* gcc, binutils, g++
 * nasm
 * justfile
 * qemu
