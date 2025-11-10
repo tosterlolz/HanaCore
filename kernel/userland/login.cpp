@@ -4,15 +4,24 @@
 #include "../libs/libc.h"
 #include "../utils/logger.hpp"
 #include "../scheduler/scheduler.hpp"
+#include "../filesystem/vfs.hpp"
+#include "elf_loader.hpp"
+#include "../shell/shell.hpp"
+#include "../../third_party/limine/limine.h"
 #include <string.h>
+#include <cstdio>
+
+extern volatile struct limine_module_request module_request;
+extern volatile struct limine_hhdm_request limine_hhdm_request;
 
 extern "C" {
     void print(const char*);
     char keyboard_poll_char(void);
+    int memcmp(const void* s1, const void* s2, size_t n);
 }
 
 namespace hanacore {
-    namespace shell {
+    namespace userland {
 
         // Simple password input (no echo)
         static void read_password(char* buf, int maxlen) {
@@ -99,7 +108,82 @@ namespace hanacore {
                         print("\nWelcome to HanaCore!\n");
                         print("Type 'help' for available commands.\n\n");
 
-                        // Start the interactive shell
+                        // Launch the user's shell
+                        size_t shell_size = 0;
+                        void* shell_data = nullptr;
+                        
+                        // First try VFS
+                        shell_data = ::vfs_get_file_alloc(user->shell, &shell_size);
+                        hanacore::utils::log_info_cpp("login: VFS lookup for shell returned");
+                        
+                        // Try uppercase variant if lowercase failed
+                        if (!(shell_data && shell_size > 0) && user->shell[0] == '/') {
+                            char upper_shell[256];
+                            strncpy(upper_shell, user->shell, 255);
+                            for (int i = 0; upper_shell[i]; i++) {
+                                if (upper_shell[i] >= 'a' && upper_shell[i] <= 'z') {
+                                    upper_shell[i] = upper_shell[i] - 'a' + 'A';
+                                }
+                            }
+                            shell_data = ::vfs_get_file_alloc(upper_shell, &shell_size);
+                            hanacore::utils::log_info_cpp("login: VFS lookup for uppercase shell returned");
+                        }
+                        
+                        // If still not found, try Limine modules
+                        if (!(shell_data && shell_size > 0) && module_request.response) {
+                            hanacore::utils::log_info_cpp("login: Searching Limine modules for shell");
+                            volatile struct limine_module_response* resp = module_request.response;
+                            // Extract just the filename from the shell path
+                            const char* shell_name = user->shell;
+                            for (const char* p = user->shell; *p; p++) {
+                                if (*p == '/') shell_name = p + 1;
+                            }
+                            
+                            for (uint64_t i = 0; i < resp->module_count; ++i) {
+                                volatile struct limine_file* mod = resp->modules[i];
+                                const char* path = (const char*)(uintptr_t)mod->path;
+                                if (path && limine_hhdm_request.response) {
+                                    uint64_t hoff = limine_hhdm_request.response->offset;
+                                    if ((uint64_t)path < hoff) path = (const char*)((uintptr_t)path + hoff);
+                                }
+                                if (!path) continue;
+                                
+                                // Check if this module matches the shell name
+                                size_t pl = 0; while (path[pl]) ++pl;
+                                size_t sl = 0; while (shell_name[sl]) ++sl;
+                                if (pl >= sl && !memcmp(path + pl - sl, shell_name, sl)) {
+                                    hanacore::utils::log_info_cpp("login: Found shell in Limine modules");
+                                    uintptr_t addr = (uintptr_t)mod->address;
+                                    if (limine_hhdm_request.response) {
+                                        uint64_t off = limine_hhdm_request.response->offset;
+                                        if ((uint64_t)addr < off) addr = (uintptr_t)(off + addr);
+                                    }
+                                    shell_data = (void*)addr;
+                                    shell_size = (size_t)mod->size;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if (shell_data && shell_size > 0) {
+                            void* entry = elf64_load_from_memory(shell_data, shell_size);
+                            if (entry) {
+                                hanacore::utils::log_info_cpp("login: Launching shell");
+                                void (*shell_entry)(void) = (void(*)(void))entry;
+                                shell_entry();
+                            } else {
+                                print("Failed to load shell binary.\n");
+                                hanacore::utils::log_info_cpp("login: ELF load failed for shell");
+                            }
+                        } else {
+                            print("Shell not found.\n");
+                            hanacore::utils::log_info_cpp("login: Shell not found in any location");
+                            
+                            // Fallback: launch built-in shell
+                            print("Using built-in shell.\n\n");
+                            hanacore::utils::log_info_cpp("login: Launching built-in shell");
+                            hanacore::shell::builtin_shell_main();
+                        }
                         return;
                     }
                 } else {

@@ -1,7 +1,7 @@
 #pragma once
 
 namespace hanacore {
-    namespace shell {
+    namespace userland {
         void login_main(void);
     }
 }

@@ -24,21 +24,10 @@
 #define __NR_openat 257
 #define __NR_exit 60
 
-static long map_linux_to_hana(long num, long *out_extra) {
-    // out_extra can be used to pass special flags or hints; unused for now
-    (void)out_extra;
-    switch (num) {
-        case __NR_read: return HANA_SYSCALL_READ;
-        case __NR_write: return SYSCALL_WRITE; // same numeric id in Hana
-        case __NR_open: return HANA_SYSCALL_OPEN;
-        case __NR_openat: return HANA_SYSCALL_OPEN; // openat -> open(path, flags)
-        case __NR_close: return HANA_SYSCALL_CLOSE;
-        case __NR_lseek: return HANA_SYSCALL_LSEEK;
-        case __NR_exit: return SYSCALL_EXIT;
-        default: return -1; // unmapped
-    }
-}
-
+// Directly invoke the syscall instruction with the original (Linux) syscall
+// number. The kernel provides a Linux-compatible dispatcher for common
+// syscalls, so pass-through makes userland programs compiled for Linux
+// work without additional mapping.
 long syscall(long num, ...){
     va_list ap; va_start(ap, num);
     unsigned long a1 = va_arg(ap, unsigned long);
@@ -49,13 +38,6 @@ long syscall(long num, ...){
     unsigned long a6 = va_arg(ap, unsigned long);
     va_end(ap);
 
-    long mapped = map_linux_to_hana(num, NULL);
-    if (mapped < 0) {
-        // Return -1 to indicate unimplemented syscall (musl/user code will
-        // interpret -1 / errno; we don't set errno here).
-        return -1;
-    }
-
     long ret;
     register unsigned long r10 __asm__("r10") = a4;
     register unsigned long r8  __asm__("r8")  = a5;
@@ -63,7 +45,7 @@ long syscall(long num, ...){
     __asm__ volatile (
         "syscall"
         : "=a" (ret)
-        : "a" (mapped), "D" (a1), "S" (a2), "d" (a3), "r" (r10), "r" (r8), "r" (r9)
+        : "a" (num), "D" (a1), "S" (a2), "d" (a3), "r" (r10), "r" (r8), "r" (r9)
         : "rcx", "r11", "memory"
     );
     return ret;

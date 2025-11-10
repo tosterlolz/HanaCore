@@ -16,8 +16,9 @@ mkdir -p "$ISO_ROOT"
 echo "mkrootfs: creating blank rootfs.img ($SIZE_MB MB)"
 dd if=/dev/zero of="$IMG" bs=1M count=$SIZE_MB status=progress
 
-echo "mkrootfs: formatting as FAT filesystem"
-mkfs.fat "$IMG"
+echo "mkrootfs: formatting as FAT32 filesystem"
+# Create FAT32 filesystem with 4 sectors per cluster
+mkfs.fat -F 32 -s 4 "$IMG"
 
 echo "mkrootfs: mounting image"
 sudo mount -o loop "$IMG" "$TMPDIR/mnt"
@@ -31,7 +32,7 @@ sudo umount "$TMPDIR/mnt"
 
 cp "$IMG" "$ISO_ROOT/rootfs.img"
 echo "mkrootfs: copied rootfs.img to $ISO_ROOT/rootfs.img for ISO inclusion"
-
+sudo umount $TMPDIR 2>/dev/null; echo "Unmounted successfully"
 # Ensure bin/ exists in ISO root and copy binaries
 mkdir -p "$ISO_ROOT/bin"
 cp -a "$SRC_DIR/bin/." "$ISO_ROOT/bin/"
