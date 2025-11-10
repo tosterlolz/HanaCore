@@ -83,22 +83,22 @@ foreach(_f IN LISTS LIMINE_FILES)
   )
 endforeach()
 
-# Optionally build a FAT32 rootfs image (rootfs.img) from `rootfs_src/` and
-# include it as a Limine module in the ISO. This recreates the previous
-# behaviour where the ISO bundled a rootfs image that the kernel can mount.
+# Optionally build an initrd (tar archive) from `rootfs_src/` and include it
+# as a Limine module in the ISO. This produces ${CMAKE_BINARY_DIR}/initrd.tar
+# which is copied into the ISO staging directory as `initrd.tar`.
 if(BUILD_USERLAND)
-  # Run the mkrootfs helper script located in tools/ to produce ${CMAKE_BINARY_DIR}/rootfs.img
+  # Run the mkrootfs helper script located in tools/ to produce ${CMAKE_BINARY_DIR}/initrd.tar
   add_custom_command(TARGET install_iso POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E echo "Generating rootfs.img from ${CMAKE_SOURCE_DIR}/rootfs_src"
+    COMMAND ${CMAKE_COMMAND} -E echo "Generating initrd.tar from ${CMAKE_SOURCE_DIR}/rootfs_src"
     COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_SOURCE_DIR}/tools ${CMAKE_SOURCE_DIR}/tools/mkrootfs.sh ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${ISO_ROOT_DIR}
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/rootfs.img ${ISO_ROOT_DIR}/rootfs.img
-    COMMENT "Create rootfs.img and copy into ISO root"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/initrd.tar ${ISO_ROOT_DIR}/initrd.tar
+    COMMENT "Create initrd.tar and copy into ISO root"
   )
   # Informational note at configure time
-  message(STATUS "BUILD_USERLAND=ON: rootfs.img will be created from rootfs_src/ and included in the ISO")
+  message(STATUS "BUILD_USERLAND=ON: initrd.tar will be created from rootfs_src/ and included in the ISO")
 else()
-  message(STATUS "BUILD_USERLAND=OFF: skipping rootfs.img creation")
+  message(STATUS "BUILD_USERLAND=OFF: skipping initrd.tar creation")
 endif()
 
 message(STATUS "Configured HanaCore with CMake. Build directory: ${CMAKE_BINARY_DIR}")

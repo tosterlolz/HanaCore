@@ -34,6 +34,10 @@ namespace hanacore {
         void fat32_mount_all_letter_modules();
         // List mounted filesystems: callback receives a printable line per mount
         void fat32_list_mounts(void (*cb)(const char* line));
+    // Safe, small summary that doesn't enumerate Limine modules. Use this
+    // from user-visible tools (like lsblk) to avoid dereferencing
+    // module pointers that may be inaccessible in some environments.
+    void fat32_get_summary(void (*cb)(const char* line));
 
     // Write helpers (simplified): create/remove files and directories.
     // These are minimal, short-name only implementations intended for a

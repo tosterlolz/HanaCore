@@ -3,6 +3,10 @@
 #include "../userland/users.hpp"
 #include "../userland/elf_loader.hpp"
 #include "../filesystem/vfs.hpp"
+#include "../filesystem/hanafs.hpp"
+#include "../filesystem/fat32.hpp"
+#include "../mem/heap.hpp"
+#include "../scheduler/scheduler.hpp"
 #include "../../third_party/limine/limine.h"
 #include <cstdio>
 #include <cstring>
@@ -31,6 +35,7 @@ int cmd_help(const char* args) {
     print("pwd               - Print working directory\n");
     print("cd <path>         - Change directory (stub)\n");
     print("ls [path]         - List directory contents\n");
+    print("lsblk            - List block devices and mounts\n");
     print("version           - Show system version\n");
     print("\n");
     return 0;
@@ -149,6 +154,46 @@ int cmd_exec_external(const char* cmdname, const char* args) {
         }
     }
     
+    // As a fallback, try to execute from /bin/<cmdname> using VFS
+    // NOTE: executing user-mode ELF binaries directly from the kernel is unsafe
+    // because they expect a user-mode environment (syscalls, stack, TSS, paging).
+    // For now, avoid attempting to run binaries loaded from VFS and return a
+    // clear error instead of crashing. In the future implement proper exec/spawn.
+    if (cmdname && cmdname[0] != '\0') {
+        char binpath[256];
+        snprintf(binpath, sizeof(binpath), "/bin/%s", cmdname);
+        size_t len = 0;
+        void* data = ::vfs_get_file_alloc(binpath, &len);
+        if (data && len > 0) {
+            // Try to load ELF into memory (elf loader uses bump allocator)
+            void* entry = elf64_load_from_memory(data, len);
+            // free the VFS buffer returned by vfs_get_file_alloc
+            hanacore::mem::kfree(data);
+            if (!entry) {
+                print("Failed to load ELF from ");
+                print(binpath);
+                print("\n");
+                return 1;
+            }
+
+            // Create a user task to run the ELF entry. Use a modest user stack.
+            const size_t USER_STACK = 16 * 1024;
+            int pid = hanacore::scheduler::create_user_task(entry, USER_STACK);
+            if (pid == 0) {
+                print("Failed to create user task for ");
+                print(binpath);
+                print("\n");
+                return 1;
+            }
+
+            char tmp[32];
+            snprintf(tmp, sizeof(tmp), "Started pid=%d\n", pid);
+            print(tmp);
+            return 0;
+        }
+        if (data) hanacore::mem::kfree(data);
+    }
+
     // Command not found
     print("Command not found: ");
     print(cmdname);
@@ -185,7 +230,11 @@ int cmd_ls(const char* args) {
     if (rc != 0) {
         print("Cannot list directory: ");
         print(path);
-        print("\n");
+        print(" (rc=");
+        char tmp[16];
+        snprintf(tmp, sizeof(tmp), "%d", rc);
+        print(tmp);
+        print(")\n");
         return 1;
     }
     
@@ -193,6 +242,73 @@ int cmd_ls(const char* args) {
         print("(empty directory)\n");
     }
     
+    return 0;
+}
+
+// Collector callback: store lines into a provided buffer (non-printing)
+struct lsblk_collector_t {
+    char (*lines)[128];
+    int max_lines;
+    int count;
+};
+
+static void lsblk_collect_cb(const char* line, void* ctx) {
+    if (!line || !ctx) return;
+    lsblk_collector_t* col = (lsblk_collector_t*)ctx;
+    if (col->count >= col->max_lines) return;
+    // copy up to 127 chars and NUL-terminate
+    int i = 0;
+    for (; i + 1 < 128 && line[i]; ++i) col->lines[col->count][i] = line[i];
+    col->lines[col->count][i] = '\0';
+    col->count++;
+}
+
+// Adapter wrappers to match existing C callbacks that don't accept context.
+// We'll use small trampoline where necessary: a global pointer used only
+// while making the synchronous call into the filesystem.
+static lsblk_collector_t* g_lsblk_col = nullptr;
+static void lsblk_trampoline_cb(const char* line) {
+    if (!g_lsblk_col) return;
+    lsblk_collect_cb(line, g_lsblk_col);
+}
+
+int cmd_lsblk(const char* args) {
+    (void)args;
+    print("=== lsblk ===\n");
+
+    // Prepare small collector buffer on stack
+    char lines[64][128];
+    lsblk_collector_t col;
+    col.lines = lines;
+    col.max_lines = 64;
+    col.count = 0;
+
+    // Collect VFS mounts
+    print("-- VFS mounts --\n");
+    g_lsblk_col = &col;
+    ::vfs_list_mounts(lsblk_trampoline_cb);
+    g_lsblk_col = nullptr;
+
+    // FAT32 summary (only if initialized)
+    print("-- FAT32 summary --\n");
+    if (hanacore::fs::fat32_ready) {
+        g_lsblk_col = &col;
+        hanacore::fs::fat32_get_summary(lsblk_trampoline_cb);
+        g_lsblk_col = nullptr;
+    } else {
+        // Not initialized => record message
+        if (col.count < col.max_lines) {
+            snprintf(col.lines[col.count], 128, "(FAT32 not initialized)");
+            col.count++;
+        }
+    }
+
+    // Now print all collected lines (single-threaded, safe)
+    for (int i = 0; i < col.count; ++i) {
+        print(col.lines[i]);
+        print("\n");
+    }
+
     return 0;
 }
 

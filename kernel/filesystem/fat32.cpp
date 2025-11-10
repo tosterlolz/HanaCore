@@ -13,6 +13,10 @@ int fat32_init_from_iso_root() {
     fat32_ready = true;
     return 0;
 }
+static inline char fat_toupper(char c) {
+    if (c >= 'a' && c <= 'z') return c - ('a' - 'A');
+    return c;
+}
 } // namespace fs
 } // namespace hanacore
 #include <cstdlib>
@@ -178,6 +182,97 @@ static uint32_t read_fat_entry(uint32_t cluster) {
     uint32_t val = *(uint32_t*)&sector[ent_offset];
     val &= 0x0FFFFFFF;
     return val;
+}
+
+static bool fat_shortname_cmp(const uint8_t entry_name[11], const char *component) {
+    // Build normalized entry name into buffer: NAME[0..7], EXT[0..2], no dot.
+    char norm_entry[12]; // 11 chars + null
+    int i, j;
+
+    for (i = 0; i < 11; ++i) {
+        char c = entry_name[i];
+        // treat 0x00 or 0x20 as end/space
+        if (c == 0x00 || c == 0x20) {
+            // fill remainder with NULs
+            for (j = i; j < 11; ++j) norm_entry[j] = '\0';
+            break;
+        }
+        norm_entry[i] = fat_toupper((char)c);
+        if (i == 10) norm_entry[11] = '\0';
+    }
+    if (i < 11) {
+        // ensure null termination
+        norm_entry[11] = '\0';
+    } else {
+        norm_entry[11] = '\0';
+    }
+
+    // Build normalized component (remove dot, uppercase) into buffer
+    char norm_comp[16]; // allow some length safeguards
+    int comp_i = 0;
+    for (i = 0; component[i] != '\0' && comp_i < (int)sizeof(norm_comp) - 1; ++i) {
+        char c = component[i];
+        if (c == '.') continue; // skip dot
+        norm_comp[comp_i++] = fat_toupper(c);
+    }
+    norm_comp[comp_i] = '\0';
+
+    // Compare lengths: if entry normalized ends earlier, compare only up to its length.
+    // Treat absent extension in component as acceptable.
+    // Simple case-insensitive string compare:
+    if (strcmp(norm_entry, norm_comp) == 0) return true;
+
+    // Some entries have no extension packed, allow matching component without ext or with ext
+    // Compare by reconstructing entry as name + ext contiguous without padding spaces.
+    // norm_entry already holds contiguous packing; norm_comp may include ext chars.
+    // If norm_comp is longer than norm_entry, not a match.
+    if (strlen(norm_entry) == strlen(norm_comp)) {
+        return (strcmp(norm_entry, norm_comp) == 0);
+    }
+    return false;
+}
+
+// Reconstruct long filename from FAT LFN (Long File Name) entries.
+// Returns 1 (true) if LFN was successfully reconstructed, 0 (false) otherwise.
+// Note: In standard FAT32, LFN entries appear BEFORE the main short-name entry.
+// This is a simplified implementation that returns 0 (no LFN found) to fall back to short-name.
+// A full implementation would scan backward for 0x0F attribute entries.
+static int fat_reconstruct_lfn (const uint8_t *dir_entry_raw, char *buf, size_t bufsize) {
+    // For now, return 0 to indicate no LFN found, forcing fallback to short-name comparison.
+    // Proper LFN reconstruction would:
+    // 1. Scan backward in directory to find 0x0F entries (LFN entries)
+    // 2. Extract Unicode characters from specific offsets in each LFN entry
+    // 3. Reconstruct full filename
+    // 4. Validate checksum against the short-name entry
+    (void)dir_entry_raw; (void)buf; (void)bufsize;
+    return 0;
+}
+
+static bool fat_dir_entry_matches_component(const uint8_t *dir_entry_raw, const char *component, bool has_lfn) {
+    // If LFN is present and stored, typical implementations reconstruct the long name.
+    // If LFN handling exists elsewhere, prefer that. For simplicity, try LFN first if available:
+    if (has_lfn) {
+        // Attempt case-insensitive comparison against reconstructed long filename.
+        // Assume function fat_reconstruct_lfn(dir_entry_raw, buf, bufsize) exists in codebase.
+        char lfn_buf[256];
+        if (fat_reconstruct_lfn(dir_entry_raw, lfn_buf, sizeof(lfn_buf))) {
+            // normalize lfn and component to uppercase for comparison
+            // simple case-insensitive compare:
+            size_t a = strlen(lfn_buf), b = strlen(component);
+            if (a == b) {
+                bool equal = true;
+                for (size_t i = 0; i < a; ++i)
+                    if (fat_toupper(lfn_buf[i]) != fat_toupper(component[i])) { equal = false; break; }
+                if (equal) return true;
+            } else {
+                // case-insensitive compare ignoring extension dot, if needed
+                // fallback to short-name comparison below
+            }
+        }
+    }
+
+    // Fall back to short-name compare (case-insensitive)
+    return fat_shortname_cmp((const uint8_t*)dir_entry_raw, component);
 }
 
 // Write a FAT entry for `cluster` (both FAT copies). `val` is masked to 28 bits.
@@ -649,22 +744,15 @@ int fat32_init_from_module(const char* module_name) {
             if (!path) continue;
             // match exact module name or path ending
             if (ends_with(path, module_name) || strcmp(path, module_name) == 0) {
-                // Limine provides module address. Check if it needs HHDM offset conversion.
+                // Limine provides module address - it's ALREADY in HHDM virtual space
+                // DO NOT apply HHDM offset conversion
                 uintptr_t mod_addr = (uintptr_t)mod->address;
                 const void* mod_virt = (const void*)mod_addr;
                 
-                // If address looks physical (below HHDM offset), apply the HHDM conversion
-                if (limine_hhdm_request.response) {
-                    uint64_t hhdm_off = limine_hhdm_request.response->offset;
-                    if ((uint64_t)mod_addr < hhdm_off) {
-                        mod_virt = (const void*)(hhdm_off + mod_addr);
-                    }
-                }
-                
                 {
                     char tmp[256];
-                    snprintf(tmp, sizeof(tmp), "[FAT32] init_from_module: %s raw_addr=0x%llx final_virt=%p size=%u",
-                             module_name, (unsigned long long)mod_addr, mod_virt, (unsigned)mod->size);
+                    snprintf(tmp, sizeof(tmp), "[FAT32] init_from_module: %s addr=%p size=%u",
+                             module_name, mod_virt, (unsigned)mod->size);
                     hanacore::utils::log_info_cpp(tmp);
                 }
                 
@@ -809,8 +897,8 @@ int fat32_init_from_memory(const void* data, size_t size) {
         snprintf(tmp, sizeof(tmp), "[FAT32] Set module_image=%p module_image_size=%u", (void*)module_image, (unsigned)module_image_size);
         hanacore::utils::log_info_cpp(tmp);
     }
-    // directly from this FAT32 instance when mounted as a module image.
-    vfs_register_mount("fat32", "/");
+    // Mount FAT32 at /core for core files
+    vfs_register_mount("fat32", "/core/");
 
     return 0;
 }
@@ -978,11 +1066,38 @@ int fat32_list_dir(const char* path, void (*cb)(const char* name)) {
                 return -1;
             }
 
+            // DEBUG: Log first few bytes of root directory
+            if (cluster == root_dir_cluster && s == 0) {
+                char tmp[256];
+                snprintf(tmp, sizeof(tmp), "[FAT32] Reading root dir (cluster %u, lba %u, size %u bytes)", cluster, lba, bytes_per_sector);
+                hanacore::utils::log_info_cpp(tmp);
+                char hex[160]; int hoff = 0;
+                for (int i = 0; i < 32; ++i) hoff += snprintf(hex + hoff, sizeof(hex) - hoff, "%02X ", (unsigned)sector[i]);
+                hanacore::utils::log_info_cpp(hex);
+            }
+
             for (int i = 0; i < (int)bytes_per_sector; i += 32) {
                 uint8_t first = sector[i];
                 if (first == 0x00) return 0;
                 if (first == 0xE5) continue;
-                if ((sector[i + 11] & 0x08) != 0) continue;
+                
+                // Debug: log every entry
+                char dbg[128];
+                snprintf(dbg, sizeof(dbg), "[FAT32] Entry at offset %d: first=0x%02x attr=0x%02x", i, first, sector[i + 11]);
+                hanacore::utils::log_info_cpp(dbg);
+                
+                if ((sector[i + 11] & 0x08) != 0) {
+                    hanacore::utils::log_info_cpp("  -> Skipped: volume label");
+                    continue;
+                }
+                if ((sector[i + 11] & 0x0F) == 0x0F) {
+                    hanacore::utils::log_info_cpp("  -> Skipped: LFN entry");
+                    continue;
+                }
+                if ((sector[i + 11] & 0x10) != 0) {
+                    hanacore::utils::log_info_cpp("  -> Skipped: directory");
+                    continue;
+                }
 
                 char name[13];
                 // copy short name (8 bytes) and null-terminate
@@ -1314,31 +1429,13 @@ void fat32_mount_all_letter_modules() {
         hanacore::utils::log_info_cpp(tmp);
     }
 
-    // If a filesystem is already mounted (e.g. kernel_main mounted a module
-    // earlier), don't override it here — just report mounts.
     if (fat32_ready) {
         hanacore::utils::log_info_cpp("[FAT32] filesystem already mounted; skipping auto-mount");
         fat32_list_mounts([](const char* line) { hanacore::utils::log_info_cpp(line); });
         return;
     }
 
-    // First try to mount from any Limine-provided module image (e.g. rootfs.img)
     if (module_request.response) {
-        // Quick-path: attempt to initialise from common rootfs module names
-        // first. This handles cases where the module list/order differs and
-        // ensures rootfs.img is preferred when present.
-        if (!fat32_ready) {
-            if (fat32_init_from_module("rootfs.img") == 0) {
-                hanacore::utils::log_ok_cpp("[FAT32] Mounted module rootfs.img (quick-path)");
-                fat32_list_mounts([](const char* line) { hanacore::utils::log_info_cpp(line); });
-                return;
-            }
-            if (fat32_init_from_module("rootfs.bin") == 0) {
-                hanacore::utils::log_ok_cpp("[FAT32] Mounted module rootfs.bin (quick-path)");
-                fat32_list_mounts([](const char* line) { hanacore::utils::log_info_cpp(line); });
-                return;
-            }
-        }
         volatile struct limine_module_response* resp = module_request.response;
         // Diagnostic: list available modules so we can match correctly
         {
@@ -1346,7 +1443,7 @@ void fat32_mount_all_letter_modules() {
             snprintf(tmp, sizeof(tmp), "[FAT32] Limine module_count=%u", (unsigned)resp->module_count);
             hanacore::utils::log_info_cpp(tmp);
         }
-        for (uint64_t i = 0; i < resp->module_count; ++i) {
+    for (uint64_t i = 0; i < resp->module_count; ++i) {
             volatile struct limine_file* mod = resp->modules[i];
             const char* path = (const char*)(uintptr_t)mod->path;
             // Print each module path for debugging (respect HHDM offset)
@@ -1386,7 +1483,7 @@ void fat32_mount_all_letter_modules() {
 
             // Accept a wider range of module names: any .img, or names containing
             // "rootfs" or the literal "ata_master". This handles variations in
-            // how the ISO/boot layout exposes the module path (e.g. "/boot/rootfs.img").
+            // how the ISO/boot layout exposes the module path (e.g. "/boot/initrd.tar").
             bool want = false;
             if (ends_with(path, ".img") || ends_with(path, ".bin")) want = true;
             if (!want && strstr(path, "rootfs")) want = true;
@@ -1457,6 +1554,26 @@ void fat32_list_mounts(void (*cb)(const char* line)) {
             else snprintf(mline, sizeof(mline), "module[%u]: <unnamed> (%u bytes)", (unsigned)i, (unsigned)mod->size);
             cb(mline);
         }
+    }
+}
+
+// Safe summary variant used by user-facing tools. This avoids iterating
+// Limine module structures which may not be safe to dereference from
+// some runtime contexts. It only reports the primary mounted_drive and
+// any recorded module name (which is stored locally).
+void fat32_get_summary(void (*cb)(const char* line)) {
+    if (!cb) return;
+    char buf[128];
+    if (mounted_drive == 1) {
+        if (mounted_module_name[0]) snprintf(buf, sizeof(buf), "FAT32 mount: [1: module -> %s]", mounted_module_name);
+        else snprintf(buf, sizeof(buf), "FAT32 mount: [1: rootfs]");
+        cb(buf);
+    } else if (mounted_drive == 0) {
+        snprintf(buf, sizeof(buf), "FAT32 mount: [0: ATA master]");
+        cb(buf);
+    } else {
+        snprintf(buf, sizeof(buf), "FAT32 mount: [no mount]");
+        cb(buf);
     }
 }
 

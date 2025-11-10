@@ -4,19 +4,25 @@ set -euo pipefail
 
 ROOTDIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="$ROOTDIR/build/userbin"
-ROOTFS_BIN="$ROOTDIR/rootfs_src/bin"
+rootfs_BIN="$ROOTDIR/rootfs_src/bin"
 
 CC=${CC:-gcc}
-mkdir -p "$OUT_DIR" "$ROOTFS_BIN"
+mkdir -p "$OUT_DIR" "$rootfs_BIN"
 
 declare -A programs=(
-    [hello_hana]="test_programs/hello_hana.c"
-    [hanabox]="userland/hanabox.c"
-    [hcsh_user]="userland/shell/hcsh.c"
+    [hls]="userland/apps/ls.c"
+    [sh]="userland/apps/sh.c"
+    # keep these commented as historical entries - builds will be skipped if missing
+    # [hello_hana]="test_programs/hello_hana.c"
+    # [hanabox]="userland/hanabox.c"
 )
 
 for name in "${!programs[@]}"; do
     src="${programs[$name]}"
+    if [ ! -f "$src" ]; then
+        echo "Skipping $name: source $src not found"
+        continue
+    fi
     echo "Building $name..."
     $CC -ffreestanding -nostdlib -nostartfiles -static \
         -o "$OUT_DIR/$name.elf" \
@@ -25,17 +31,9 @@ for name in "${!programs[@]}"; do
         echo "Error: failed to build $name" >&2
         exit 1
     fi
-    cp "$OUT_DIR/$name.elf" "$ROOTFS_BIN/$name"
-    chmod +x "$ROOTFS_BIN/$name"
+    cp "$OUT_DIR/$name.elf" "$rootfs_BIN/$name"
+    chmod +x "$rootfs_BIN/$name"
 done
 
-# Canonical shell name for kernel
-if [ -f "$ROOTFS_BIN/hcsh_user" ]; then
-    cp "$ROOTFS_BIN/hcsh_user" "$ROOTFS_BIN/hcsh"
-    chmod +x "$ROOTFS_BIN/hcsh"
-    cp "$ROOTFS_BIN/hcsh" "$ROOTFS_BIN/HCSH"
-    chmod +x "$ROOTFS_BIN/HCSH"
-fi
-
-echo "User programs copied to $ROOTFS_BIN:"
-ls -l "$ROOTFS_BIN"
+echo "User programs copied to $rootfs_BIN:"
+ls -l "$rootfs_BIN"

@@ -150,6 +150,8 @@ void builtin_shell_main(void) {
             ret = commands::cmd_clear(args);
         } else if (strcmp(cmd, "ls") == 0) {
             ret = commands::cmd_ls(args);
+        } else if (strcmp(cmd, "lsblk") == 0) {
+            ret = commands::cmd_lsblk(args);
         } else {
             // Try to execute as external command from Limine modules
             ret = commands::cmd_exec_external(cmd, args);

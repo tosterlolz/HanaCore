@@ -2,7 +2,6 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include "hanafs.hpp"
 
 namespace ext3 {
     // Debug: List all files in /bin and log their names

@@ -481,10 +481,16 @@ extern "C" int hanafs_list_dir(const char* path, void (*cb)(const char* name)) {
         } else {
             continue;
         }
-        if (candidate[0] == '/') ++candidate;
-        const char* slash = strchr(candidate, '/');
-        if (slash) continue;
-        cb(candidate);
+    if (!candidate) continue;
+    // Skip the entry that corresponds exactly to the directory itself
+    // (candidate can be an empty string in that case). This prevented
+    // callers like `ls` from receiving an empty name and incorrectly
+    // treating the directory as non-empty.
+    if (candidate[0] == '\0') continue;
+    if (candidate[0] == '/') ++candidate;
+    const char* slash = strchr(candidate, '/');
+    if (slash) continue;
+    cb(candidate);
     }
     hanacore::mem::kfree(pbuf);
     return 0;

@@ -10,6 +10,7 @@
 #include "../../third_party/limine/limine.h"
 #include <string.h>
 #include <cstdio>
+#include "../mem/heap.hpp"
 
 extern volatile struct limine_module_request module_request;
 extern volatile struct limine_hhdm_request limine_hhdm_request;
@@ -111,9 +112,11 @@ namespace hanacore {
                         // Launch the user's shell
                         size_t shell_size = 0;
                         void* shell_data = nullptr;
-                        
+                        bool shell_from_vfs = false;
+
                         // First try VFS
                         shell_data = ::vfs_get_file_alloc(user->shell, &shell_size);
+                        if (shell_data && shell_size > 0) shell_from_vfs = true;
                         hanacore::utils::log_info_cpp("login: VFS lookup for shell returned");
                         
                         // Try uppercase variant if lowercase failed
@@ -126,6 +129,7 @@ namespace hanacore {
                                 }
                             }
                             shell_data = ::vfs_get_file_alloc(upper_shell, &shell_size);
+                            if (shell_data && shell_size > 0) shell_from_vfs = true;
                             hanacore::utils::log_info_cpp("login: VFS lookup for uppercase shell returned");
                         }
                         
@@ -158,7 +162,8 @@ namespace hanacore {
                                         uint64_t off = limine_hhdm_request.response->offset;
                                         if ((uint64_t)addr < off) addr = (uintptr_t)(off + addr);
                                     }
-                                    shell_data = (void*)addr;
+                                        shell_data = (void*)addr;
+                                        shell_from_vfs = false;
                                     shell_size = (size_t)mod->size;
                                     break;
                                 }
@@ -166,25 +171,45 @@ namespace hanacore {
                         }
                         
                         if (shell_data && shell_size > 0) {
+                            // If we discovered the shell from a Limine module, shell_data
+                            // points into the module image and must not be freed. Detect
+                            // that case by checking whether shell_data was set from a
+                            // module (above we set it to module address). We mark
+                            // shell_from_vfs=false when using module lookup below.
+                            
                             void* entry = elf64_load_from_memory(shell_data, shell_size);
                             if (entry) {
-                                hanacore::utils::log_info_cpp("login: Launching shell");
-                                void (*shell_entry)(void) = (void(*)(void))entry;
-                                shell_entry();
+                                hanacore::utils::log_info_cpp("login: Launching shell as user task");
+                                // Create a user task and wait for it to exit, then
+                                // return to the login prompt. Use a 64KB user stack.
+                                const size_t USER_STACK = 64 * 1024;
+                                int pid = hanacore::scheduler::create_user_task(entry, USER_STACK);
+                                if (pid == 0) {
+                                    print("Failed to create user shell task.\n");
+                                    hanacore::utils::log_info_cpp("login: create_user_task failed");
+                                } else {
+                                    // If shell_data came from VFS, free it now that
+                                    // elf_loader has copied segments into bump alloc.
+                                    if (shell_from_vfs) hanacore::mem::kfree(shell_data);
+                                    // Wait for shell to exit
+                                    hanacore::scheduler::wait_task(pid);
+                                    hanacore::utils::log_info_cpp("login: shell exited, returning to login prompt");
+                                }
                             } else {
                                 print("Failed to load shell binary.\n");
                                 hanacore::utils::log_info_cpp("login: ELF load failed for shell");
+                                if (shell_from_vfs) hanacore::mem::kfree(shell_data);
                             }
                         } else {
                             print("Shell not found.\n");
                             hanacore::utils::log_info_cpp("login: Shell not found in any location");
-                            
+
                             // Fallback: launch built-in shell
                             print("Using built-in shell.\n\n");
                             hanacore::utils::log_info_cpp("login: Launching built-in shell");
                             hanacore::shell::builtin_shell_main();
                         }
-                        return;
+                        // Do not return; stay in login loop so user can re-login after shell exits
                     }
                 } else {
                     failed_attempts++;

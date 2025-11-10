@@ -11,6 +11,7 @@
 #include "../filesystem/hanafs.hpp"
 #include "../filesystem/vfs.hpp"
 #include "../filesystem/ramfs.hpp"
+#include "../userland/elf_loader.hpp"
 #include "../api/hanaapi.h"
 #include "../mem/heap.hpp"
 #include "../tty/tty.hpp"
@@ -176,6 +177,38 @@ extern "C" uint64_t syscall_dispatch(uint64_t num, uint64_t a, uint64_t b, uint6
             return fd;
         }
 
+        // Linux: SYS_execve = 59
+        case 59: /* execve */ {
+            const char* path = (const char*)(uintptr_t)a;
+            char **argv = (char**)(uintptr_t)b;
+            (void)argv; // not currently passed to loader
+            (void)c; // envp
+            if (!path) return (uint64_t)-1;
+            size_t len = 0;
+            void* data = hanacore::fs::get_file_alloc(path, &len);
+            if (!data || len == 0) {
+                if (data) hanacore::mem::kfree(data);
+                return (uint64_t)-1;
+            }
+            void* entry = elf64_load_from_memory(data, len);
+            // free VFS buffer returned
+            hanacore::mem::kfree(data);
+            if (!entry) return (uint64_t)-1;
+
+            // Create user task to run the entry. Use reasonable stack size.
+            const size_t USER_STACK = 64 * 1024;
+            int pid = hanacore::scheduler::create_user_task(entry, USER_STACK);
+            if (pid == 0) return (uint64_t)-1;
+
+            // Emulate execve semantics: replace current task by marking it dead
+            // and switch to the new task. This is a simplification.
+            if (hanacore::scheduler::current_task) {
+                hanacore::scheduler::current_task->state = hanacore::scheduler::TASK_DEAD;
+            }
+            hanacore::scheduler::schedule_next();
+            return (uint64_t)-1; // should not return on success
+        }
+
         case SYS_CLOSE: {
             int fd = (int)a;
             struct FDEntry* ent = fdtable_get(tbl, cnt, fd);
@@ -265,20 +298,28 @@ extern "C" uint64_t syscall_dispatch(uint64_t num, uint64_t a, uint64_t b, uint6
             return 0;
         }
 
-        case SYS_EXIT: {
+        // Linux: SYS_exit = 60 ; HANA_SYSCALL_EXIT also maps to exit
+    case SYS_EXIT: {
             int code = (int)a;
             (void)code;
-            log_info("sys_exit");
-            for(;;){ asm volatile("cli"); asm volatile("hlt"); }
+            log_info("sys_exit: marking current task as dead (code=%d)", code);
+            if (hanacore::scheduler::current_task) {
+                hanacore::scheduler::current_task->exit_status = code;
+                hanacore::scheduler::current_task->state = hanacore::scheduler::TASK_DEAD;
+            }
+            // Switch to next task; this function does not return for exited task
+            hanacore::scheduler::schedule_next();
             return 0;
         }
 
-        case SYS_WAITPID: {
-            int pid=(int)a;
+        // Linux: SYS_waitpid = 61
+        case SYS_WAITPID:
+        case HANA_SYSCALL_WAITPID: {
+            int pid = (int)a;
             (void)b;
             hanacore::scheduler::Task* t = hanacore::scheduler::find_task_by_pid(pid);
-            if(!t) return -1;
-            while(t->state!=hanacore::scheduler::TASK_DEAD) hanacore::scheduler::sched_yield();
+            if (!t) return -1;
+            while (t->state != hanacore::scheduler::TASK_DEAD) hanacore::scheduler::sched_yield();
             return pid;
         }
 

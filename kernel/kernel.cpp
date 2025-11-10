@@ -7,8 +7,8 @@
 #include "arch/pit.hpp"
 #include "utils/logger.hpp"
 #include "filesystem/fat32.hpp"
+#include "filesystem/initrd.hpp"
 #include "filesystem/ext3.hpp"
-#include "filesystem/hanafs.hpp"
 #include "filesystem/vfs.hpp"
 #include "filesystem/procfs.hpp"
 #include "filesystem/devfs.hpp"
@@ -84,13 +84,13 @@ extern "C" void kernel_main() {
 
     // Initialize all filesystems
     
-    // Try FAT32 module/image (rootfs.img)
-    log_info("Attempting to mount rootfs.img (FAT32) from Limine modules");
-    fat32_mount_all_letter_modules();
-    if (hanacore::fs::fat32_ready) {
-        log_ok("Mounted FAT32 rootfs (rootfs.img)");
+    // Try to load an initrd tarball from Limine modules (initrd.tar)
+    log_info("Attempting to load initrd.tar (initrd) from Limine modules");
+    // Ensure HanaFS (ramfs) is initialized so we can extract files into it
+    if (hanacore::initrd::init_from_module("initrd.tar") == 0) {
+        log_ok("Loaded initrd.tar into ramfs/HanaFS");
     } else {
-        log_info("FAT32 did not mount rootfs.img");
+        log_info("No initrd.tar module found or extraction failed");
     }
     
     // idk why this shit does not work with namespace hanacore::fs
